@@ -624,3 +624,95 @@ def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, st
 
     plt.tight_layout()
     plt.show()
+
+
+def cross_sec_lon_prob(df_sampled, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0):
+
+    # Antipodal longitude for the over-pole extension
+    lon_antipodal = lon_value + 180 if lon_value < 0 else lon_value - 180
+
+    df_primary = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+    ].copy()
+
+    df_antipodal = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= lon_antipodal - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= lon_antipodal + tol)
+    ].copy()
+
+    df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
+
+    # Compute great-circle distance from start point
+    df_lon_slice['dist_km'] = compute_great_circle_distance_km(
+        start_lat, start_lon,
+        df_lon_slice['Latitude_[deg_N]'].values,
+        df_lon_slice['Longitude_[deg_E]'].values
+    )
+
+    # ── Layout: 4 scatter panels + 1 polar map ────────────────────────────────
+    fig = plt.figure(figsize=(15, 7))
+    gs = fig.add_gridspec(2, 3, width_ratios=[1, 1, 0.5], wspace=0.3, hspace=0.35)
+
+    axes = [
+        fig.add_subplot(gs[0, 0]),
+        fig.add_subplot(gs[0, 1]),
+        fig.add_subplot(gs[1, 0]),
+        fig.add_subplot(gs[1, 1]),
+    ]
+    ax_map = fig.add_subplot(gs[:, 2], projection=ccrs.NorthPolarStereo())
+
+    # ── Plot each cluster probability ─────────────────────────────────────────
+    for i, ax in enumerate(axes):
+        col = f'prob_cluster_{i}'
+
+        sc = ax.scatter(
+            df_lon_slice['dist_km'],
+            df_lon_slice['Depth_[m]'],
+            c=df_lon_slice[col],
+            cmap='viridis',
+            vmin=0,
+            vmax=1,
+            s=4,
+            alpha=0.5
+        )
+
+        ax.invert_yaxis()
+        ax.set_title(f'Cluster {i} Probability')
+        ax.set_xlabel(f'Distance (km) from {start_lat}°N, {abs(start_lon)}°W')
+        ax.set_ylabel('Depth (m)')
+
+        cbar = plt.colorbar(sc, ax=ax, pad=0.02)
+        cbar.set_label('Probability')
+
+    # ── Polar map (spans both rows on the right) ──────────────────────────────
+    end_lat = start_lat
+    end_lon = lon_antipodal
+    lats_track = [start_lat, 90.0, end_lat]
+    lons_track = [start_lon, lon_value, end_lon]
+
+    ax_map.set_extent([-180, 180, 55, 90], crs=ccrs.PlateCarree())
+    ax_map.add_feature(cfeature.LAND, facecolor='lightgray', zorder=1)
+    ax_map.add_feature(cfeature.OCEAN, facecolor='white', zorder=0)
+    ax_map.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=2)
+
+    ax_map.plot(lons_track, lats_track,
+                color='black', linewidth=1.5,
+                transform=ccrs.Geodetic(), zorder=3)
+
+    ax_map.text(start_lon, start_lat - 3, 'Start',
+                transform=ccrs.PlateCarree(),
+                fontsize=7, ha='center', color='black')
+    ax_map.text(end_lon, end_lat - 3, 'End',
+                transform=ccrs.PlateCarree(),
+                fontsize=7, ha='center', color='black')
+
+    ax_map.set_title('Section Location', fontsize=9)
+
+    fig.suptitle(
+        f'GMM Cluster Probabilities — Cross Section through North Pole\n',
+        fontsize=13
+    )
+
+    plt.tight_layout()
+    plt.show()
