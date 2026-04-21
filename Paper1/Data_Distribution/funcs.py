@@ -459,3 +459,61 @@ def sample_cap_bins_xy(df, thresh, n_x_bins, n_y_bins):
 
     df_sampled = df.iloc[sampled_indices].copy()
     return df_sampled
+
+def plot_3d(n_clusters, df_sampled):
+    #Plot in 3D
+    colors = px.colors.sample_colorscale(
+        px.colors.sequential.Viridis_r,
+        np.linspace(0, 1, n_clusters)
+    )
+
+    # Stepped colorscale
+    discrete_colorscale = []
+    for i, c in enumerate(colors):
+        discrete_colorscale.append([i / n_clusters, c])
+        discrete_colorscale.append([(i + 1) / n_clusters, c])
+
+    fig_3d = px.scatter_3d(
+        df_sampled,
+        x='Latitude_[deg_N]',
+        y='Longitude_[deg_E]',
+        z='Depth_[m]',
+        color='gmm_label_4',
+        color_continuous_scale=discrete_colorscale,
+        range_color=(0, n_clusters),
+        title="3D Scatter Lat-Lon-Depth plot of GMM clusters"
+    )
+
+    fig_3d.update_traces(
+        marker=dict(
+            size=5
+        )
+    )
+
+    fig_3d.update_coloraxes(showscale=False)  # hide colorbar
+
+    for i, c in enumerate(colors):
+        fig_3d.add_trace(
+            go.Scatter3d(
+                x=[None], y=[None], z=[None],
+                mode="markers",
+                marker=dict(size=8, color=c),
+                name=f"Cluster {i}",
+                showlegend=True
+            )
+        )
+
+    fig_3d.update_layout(
+        scene=dict(
+            xaxis_title='Latitude',
+            yaxis_title='Longitude',
+            zaxis_title='Depth (m)',
+            zaxis=dict(autorange='reversed')
+        ),
+        height=800,
+        width=800,
+        legend_title_text="GMM Cluster",
+        legend_traceorder="normal"
+    )
+
+    fig_3d.show()
