@@ -517,3 +517,110 @@ def plot_3d(n_clusters, df_sampled):
     )
 
     fig_3d.show()
+
+
+# Cross section like Kate's
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from pyproj import Geod
+from matplotlib.colors import ListedColormap, BoundaryNorm
+
+def compute_great_circle_distance_km(lat_ref, lon_ref, lats, lons):
+    """Compute distance in km from a reference point along a great circle."""
+    geod = Geod(ellps='WGS84')
+    _, _, dist_m = geod.inv(
+        np.full(len(lats), lon_ref),
+        np.full(len(lats), lat_ref),
+        lons,
+        lats
+    )
+    return dist_m / 1000.0
+
+
+def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0):
+
+    # Antipodal longitude for the over-pole extension
+    lon_antipodal = lon_value + 180 if lon_value < 0 else lon_value - 180
+
+    df_primary = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+    ].copy()
+
+    df_antipodal = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= lon_antipodal - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= lon_antipodal + tol)
+    ].copy()
+
+    df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
+
+    # Compute great-circle distance from start point
+    df_lon_slice['dist_km'] = compute_great_circle_distance_km(
+        start_lat, start_lon,
+        df_lon_slice['Latitude_[deg_N]'].values,
+        df_lon_slice['Longitude_[deg_E]'].values
+    )
+
+    # ── Colormap (GMM labels) ─────────────────────────────────────────────────
+    n = n_clusters
+    base_cmap = plt.cm.viridis_r
+    colors = base_cmap(np.linspace(0, 1, n))
+    cmap = ListedColormap(colors)
+    norm = BoundaryNorm(np.arange(-0.5, n + 0.5, 1), cmap.N)
+
+    # ── Side-by-side layout ───────────────────────────────────────────────────
+    fig = plt.figure(figsize=(16, 5))
+    gs = fig.add_gridspec(1, 2, width_ratios=[3, 1], wspace=0.05)
+
+    ax = fig.add_subplot(gs[0])
+    ax_map = fig.add_subplot(gs[1], projection=ccrs.NorthPolarStereo())
+
+    # ── Cross-section scatter plot ────────────────────────────────────────────
+    sc = ax.scatter(
+        df_lon_slice['dist_km'],
+        df_lon_slice['Depth_[m]'],
+        c=df_lon_slice['gmm_label_4'],
+        cmap=cmap,
+        norm=norm,
+        s=8,
+        alpha=0.6
+    )
+
+    ax.invert_yaxis()
+    ax.set_xlabel(f'Distance (km) from {start_lat}°N, {abs(start_lon)}°W')
+    ax.set_ylabel('Depth (m)')
+    ax.set_title('GMM Clusters — Cross Section through North Pole')
+
+    # Discrete colorbar
+    cbar = plt.colorbar(sc, ax=ax, pad=0.02)
+    cbar.set_ticks(range(n))
+    cbar.set_ticklabels([f'Cluster {i}' for i in range(n)])
+    cbar.set_label('GMM Cluster')
+
+    # ── Polar map ─────────────────────────────────────────────────────────────
+    ax_map.set_extent([-180, 180, 55, 90], crs=ccrs.PlateCarree())
+    ax_map.add_feature(cfeature.LAND, facecolor='lightgray', zorder=1)
+    ax_map.add_feature(cfeature.OCEAN, facecolor='white', zorder=0)
+    ax_map.add_feature(cfeature.COASTLINE, linewidth=0.5, zorder=2)
+
+    # Section track: start → pole → antipodal end
+    end_lat = start_lat
+    end_lon = lon_antipodal
+    lats_track = [start_lat, 90.0, end_lat]
+    lons_track = [start_lon, lon_value, end_lon]
+
+    ax_map.plot(lons_track, lats_track,
+                color='black', linewidth=1.5,
+                transform=ccrs.Geodetic(), zorder=3)
+
+    ax_map.text(start_lon, start_lat - 3, 'Start',
+                transform=ccrs.PlateCarree(),
+                fontsize=7, ha='center', color='black')
+    ax_map.text(end_lon, end_lat - 3, 'End',
+                transform=ccrs.PlateCarree(),
+                fontsize=7, ha='center', color='black')
+
+    ax_map.set_title('Section Location', fontsize=9)
+
+    plt.tight_layout()
+    plt.show()
