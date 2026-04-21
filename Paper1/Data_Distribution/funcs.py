@@ -132,7 +132,7 @@ def plot_geo(df, n_clusters=4):
     center_lon = df['Longitude_[deg_E]'].mean()
 
     colors = px.colors.sample_colorscale(
-        px.colors.sequential.Plasma,
+        px.colors.sequential.Viridis_r,
         np.linspace(0, 1, n_clusters)
     )
 
