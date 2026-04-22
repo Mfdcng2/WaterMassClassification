@@ -146,7 +146,7 @@ def plot_geo(df, n_clusters=4):
         df,
         lat='Latitude_[deg_N]',
         lon='Longitude_[deg_E]',
-        color='gmm_label_4',
+        color='gmm_label_'+str(n_clusters),
         color_continuous_scale=discrete_colorscale,
         range_color=(0, n_clusters),
         title="GMM clusters using sampled TS on Geographic Map"
@@ -478,7 +478,7 @@ def plot_3d(n_clusters, df_sampled):
         x='Latitude_[deg_N]',
         y='Longitude_[deg_E]',
         z='Depth_[m]',
-        color='gmm_label_4',
+        color='gmm_label_'+str(n_clusters),
         color_continuous_scale=discrete_colorscale,
         range_color=(0, n_clusters),
         title="3D Scatter Lat-Lon-Depth plot of GMM clusters"
@@ -579,7 +579,7 @@ def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, st
     sc = ax.scatter(
         df_lon_slice['dist_km'],
         df_lon_slice['Depth_[m]'],
-        c=df_lon_slice['gmm_label_4'],
+        c=df_lon_slice['gmm_label_'+str(n)],
         cmap=cmap,
         norm=norm,
         s=8,
