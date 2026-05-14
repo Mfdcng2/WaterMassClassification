@@ -1024,3 +1024,5 @@ def method34(df, seed=22, year_rng_0=[1980,2000], year_rng_1=[2000,2023], thresh
     monthly_counts = df_sampled.groupby('month').size()
     average_monthly_count = monthly_counts.mean()
     df_sampled = df_sampled.groupby('month').apply(lambda x: x.sample(n=int(average_monthly_count), random_state=seed) if len(x) > average_monthly_count else x).reset_index(drop=True)
+
+    return df_sampled
