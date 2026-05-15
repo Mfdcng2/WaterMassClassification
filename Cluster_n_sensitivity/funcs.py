@@ -46,7 +46,8 @@ def profileNo_vs_xy_bins(
     n_y_bins: int = 100,
     show_threshold: bool = False,
     threshold_quantile: float = 0.95,
-    projection: str = 'npstere'
+    projection: str = 'npstere',
+    showfig: bool = True
 ) -> None:
     """
     Plot the number of profiles in each bin using polar stereographic projection.
@@ -57,6 +58,7 @@ def profileNo_vs_xy_bins(
         show_threshold (bool, optional): Whether to show the threshold marker. Defaults to False.
         threshold_quantile (float, optional): The quantile value for threshold calculation. Defaults to 0.95.
         projection (str, optional): Basemap projection string. Defaults to 'npstere'.
+        showfig (bool, optional): Whether to display the figure. Defaults to True.
     Returns:
         None
     """
@@ -122,7 +124,8 @@ def profileNo_vs_xy_bins(
         yaxis=dict(title='Number of points per bin')
     )
     fig = go.Figure(data=fig_data, layout=layout)
-    fig.show()
+    if showfig:
+        fig.show()
 
     return g_len_sorted[transition_point]
 
@@ -1012,8 +1015,8 @@ def method34(df, seed=22, year_rng_0=[1980,2000], year_rng_1=[2000,2023], thresh
     df_00_23 = df[(df['year'] >= year_rng_1[0]) & (df['year'] < year_rng_1[1])]
 
     # Find thresholds for each period using Peisong's histogram method in polar stereographic projection
-    threshold_0 = profileNo_vs_xy_bins(df_80_00, n_x_bins=100, n_y_bins=100, show_threshold=True, threshold_quantile=0.99, projection='npstere');
-    threshold_1 = profileNo_vs_xy_bins(df_00_23, n_x_bins=100, n_y_bins=100, show_threshold=True, threshold_quantile=0.935, projection='npstere');
+    threshold_0 = profileNo_vs_xy_bins(df_80_00, n_x_bins=100, n_y_bins=100, show_threshold=True, threshold_quantile=0.99, projection='npstere', showfig=False)
+    threshold_1 = profileNo_vs_xy_bins(df_00_23, n_x_bins=100, n_y_bins=100, show_threshold=True, threshold_quantile=0.935, projection='npstere', showfig=False)
 
     # Sample each period using the respective thresholds
     df_sampled_0 = sample_cap_bins_xy(df_80_00, thresh=threshold_0, n_x_bins=100, n_y_bins=100)
