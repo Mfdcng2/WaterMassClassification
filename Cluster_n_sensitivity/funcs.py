@@ -722,9 +722,6 @@ def cross_sec_lon_prob(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.
 from scipy.interpolate import griddata
 from scipy.ndimage import gaussian_filter
 
-from scipy.interpolate import griddata
-from scipy.ndimage import gaussian_filter
-
 def cross_sec_lon_prob2(
     df_sampled,
     n_clusters,
@@ -819,16 +816,19 @@ def cross_sec_lon_prob2(
 
     XI, YI = np.meshgrid(xi, yi)
 
-    # Layout with n_cluster scatter panels and 1 polar map
-    fig = plt.figure(figsize=(16, 8))
-    gs = fig.add_gridspec(int(np.floor(n_clusters/2)), int(np.floor(n_clusters/2)), width_ratios=[1, 1, 0.5], wspace=0.3, hspace=0.35)
+    # -------------------------------------------------------------------------
+    # Figure
+    # -------------------------------------------------------------------------
+    fig = plt.figure(figsize=(12, 8))
+    gs = fig.add_gridspec(int(np.floor(n_clusters/2)), int(np.floor(n_clusters/2)), 
+                          width_ratios=[1, 1, 0.1], wspace=0.4, hspace=0.5)
 
     axes = []
     for i in range(int(np.floor(n_clusters/2))):
         for j in range(int(np.floor(n_clusters/3))):
             axes.append(fig.add_subplot(gs[i, j]))
     
-    cax = fig.add_subplot(gs[:, 2], projection=ccrs.NorthPolarStereo())
+    cax = fig.add_subplot(gs[:, 2])
     # -------------------------------------------------------------------------
     # Plot each field
     # -------------------------------------------------------------------------
