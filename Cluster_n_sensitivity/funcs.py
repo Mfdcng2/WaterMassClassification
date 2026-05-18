@@ -629,7 +629,7 @@ def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, st
     plt.show()
 
 
-def cross_sec_lon_prob(df_sampled, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0):
+def cross_sec_lon_prob(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0):
 
     # Antipodal longitude for the over-pole extension
     lon_antipodal = lon_value + 180 if lon_value < 0 else lon_value - 180
@@ -653,16 +653,15 @@ def cross_sec_lon_prob(df_sampled, lon_value, tol=0.5, start_lat=70.0, start_lon
         df_lon_slice['Longitude_[deg_E]'].values
     )
 
-    # ── Layout: 4 scatter panels + 1 polar map ────────────────────────────────
-    fig = plt.figure(figsize=(15, 7))
-    gs = fig.add_gridspec(2, 3, width_ratios=[1, 1, 0.5], wspace=0.3, hspace=0.35)
+    # Layout with n_cluster scatter panels and 1 polar map
+    fig = plt.figure(figsize=(16, 8))
+    gs = fig.add_gridspec(int(np.floor(n_clusters/2)), int(np.floor(n_clusters/2)), width_ratios=[1, 1, 0.5], wspace=0.3, hspace=0.35)
 
-    axes = [
-        fig.add_subplot(gs[0, 0]),
-        fig.add_subplot(gs[0, 1]),
-        fig.add_subplot(gs[1, 0]),
-        fig.add_subplot(gs[1, 1]),
-    ]
+    axes = []
+    for i in range(int(np.floor(n_clusters/2))):
+        for j in range(int(np.floor(n_clusters/3))):
+            axes.append(fig.add_subplot(gs[i, j]))
+    
     ax_map = fig.add_subplot(gs[:, 2], projection=ccrs.NorthPolarStereo())
 
     # ── Plot each cluster probability ─────────────────────────────────────────
@@ -676,7 +675,7 @@ def cross_sec_lon_prob(df_sampled, lon_value, tol=0.5, start_lat=70.0, start_lon
             cmap='viridis',
             vmin=0,
             vmax=1,
-            s=4,
+            s=n_clusters,
             alpha=0.5
         )
 
@@ -717,15 +716,18 @@ def cross_sec_lon_prob(df_sampled, lon_value, tol=0.5, start_lat=70.0, start_lon
         fontsize=13
     )
 
-    plt.tight_layout()
     plt.show()
 
 
 from scipy.interpolate import griddata
 from scipy.ndimage import gaussian_filter
 
+from scipy.interpolate import griddata
+from scipy.ndimage import gaussian_filter
+
 def cross_sec_lon_prob2(
     df_sampled,
+    n_clusters,
     lon_value,
     tol=0.5,
     start_lat=70.0,
@@ -791,7 +793,7 @@ def cross_sec_lon_prob2(
     # -------------------------------------------------------------------------
     # Average probabilities within bins
     # -------------------------------------------------------------------------
-    prob_cols = [f'prob_cluster_{i}' for i in range(4)]
+    prob_cols = [f'prob_cluster_{i}' for i in range(n_clusters)]
 
     df_binned = (
         df_lon_slice
@@ -817,42 +819,22 @@ def cross_sec_lon_prob2(
 
     XI, YI = np.meshgrid(xi, yi)
 
-    # -------------------------------------------------------------------------
-    # Figure
-    # -------------------------------------------------------------------------
-    fig = plt.figure(figsize=(15, 7))
+    # Layout with n_cluster scatter panels and 1 polar map
+    fig = plt.figure(figsize=(16, 8))
+    gs = fig.add_gridspec(int(np.floor(n_clusters/2)), int(np.floor(n_clusters/2)), width_ratios=[1, 1, 0.5], wspace=0.3, hspace=0.35)
 
-    gs = fig.add_gridspec(
-        2,
-        3,
-        width_ratios=[1, 1, 0.08],
-        wspace=0.12,
-        hspace=0.35
-    )
-
-    axes = [
-        fig.add_subplot(gs[0, 0]),
-        fig.add_subplot(gs[0, 1]),
-        fig.add_subplot(gs[1, 0]),
-        fig.add_subplot(gs[1, 1]),
-    ]
-
-    cax = fig.add_subplot(gs[:, 2])
-
-    titles = [
-        'a) Cluster 0',
-        'b) Cluster 1',
-        'c) Cluster 2',
-        'd) Cluster 3'
-    ]
-
+    axes = []
+    for i in range(int(np.floor(n_clusters/2))):
+        for j in range(int(np.floor(n_clusters/3))):
+            axes.append(fig.add_subplot(gs[i, j]))
+    
+    cax = fig.add_subplot(gs[:, 2], projection=ccrs.NorthPolarStereo())
     # -------------------------------------------------------------------------
     # Plot each field
     # -------------------------------------------------------------------------
     for i, ax in enumerate(axes):
 
         col = f'prob_cluster_{i}'
-
         # -------------------------------------------------------------
         # Interpolate onto regular grid
         # -------------------------------------------------------------
@@ -881,43 +863,26 @@ def cross_sec_lon_prob2(
             shading='auto',
             cmap='viridis',
             vmin=0,
-            vmax=100
-        )
+            vmax=100)
 
         # Pole marker
         ax.axvline(
             2200,
             color='white',
             linestyle='--',
-            linewidth=1
-        )
+            linewidth=1)
 
         # Formatting
         ax.set_ylim(max_depth, 0)
-
-        ax.set_title(
-            titles[i],
-            fontsize=14
-        )
-
-        ax.set_xlabel(
-            f'Distance (km) from 70°N, 140°W'
-        )
-
+        ax.set_title(f'Cluster {i} Probability')
+        ax.set_xlabel(f'Distance (km) from 70°N, 140°W')
         ax.set_ylabel('Depth (m)')
 
     # -------------------------------------------------------------------------
     # Shared colorbar
     # -------------------------------------------------------------------------
-    cbar = fig.colorbar(
-        pcm,
-        cax=cax
-    )
-
-    cbar.set_label(
-        'Probability (%)',
-        fontsize=12
-    )
+    cbar = fig.colorbar(pcm, cax=cax)
+    cbar.set_label('Probability (%)', fontsize=12)
 
     # -------------------------------------------------------------------------
     # Title
@@ -929,7 +894,6 @@ def cross_sec_lon_prob2(
     )
 
     plt.tight_layout()
-
     plt.show()
 
 import gsw
