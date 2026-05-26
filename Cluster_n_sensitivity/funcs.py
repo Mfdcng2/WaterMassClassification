@@ -542,17 +542,15 @@ def compute_great_circle_distance_km(lat_ref, lon_ref, lats, lons):
 
 def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0):
 
-    # Antipodal longitude for the over-pole extension
-    lon_antipodal = lon_value + 180 if lon_value < 0 else lon_value - 180
-
+    # Primary slice from start_lon and secondary for lon_value intersecting at the pole
     df_primary = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
     ].copy()
 
     df_antipodal = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= lon_antipodal - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= lon_antipodal + tol)
+        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
     ].copy()
 
     df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
@@ -608,7 +606,7 @@ def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, st
 
     # Section track: start → pole → antipodal end
     end_lat = start_lat
-    end_lon = lon_antipodal
+    end_lon = lon_value
     lats_track = [start_lat, 90.0, end_lat]
     lons_track = [start_lon, lon_value, end_lon]
 
@@ -630,18 +628,20 @@ def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, st
 
 
 def cross_sec_lon_prob(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0):
-
     # Antipodal longitude for the over-pole extension
-    lon_antipodal = lon_value + 180 if lon_value < 0 else lon_value - 180
+    #lon_value = lon_value if lon_value <= 180 & lon_value >=0 else lon_value + 180
+    if lon_value < 0 and lon_value >= -180:
+        lon_value = lon_value + 180
 
+    # Primary slice from start_lon and secondary for lon_value intersecting at the pole
     df_primary = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
     ].copy()
 
     df_antipodal = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= lon_antipodal - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= lon_antipodal + tol)
+        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
     ].copy()
 
     df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
@@ -689,7 +689,7 @@ def cross_sec_lon_prob(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.
 
     # ── Polar map (spans both rows on the right) ──────────────────────────────
     end_lat = start_lat
-    end_lon = lon_antipodal
+    end_lon = lon_value
     lats_track = [start_lat, 90.0, end_lat]
     lons_track = [start_lon, lon_value, end_lon]
 
@@ -733,50 +733,31 @@ def cross_sec_lon_prob2(
     depth_bin_size=10,
     dist_bin_size=2.2
 ):
-
-    # -------------------------------------------------------------------------
-    # Antipodal longitude
-    # -------------------------------------------------------------------------
-    lon_antipodal = lon_value + 180 if lon_value < 0 else lon_value - 180
-
-    # -------------------------------------------------------------------------
-    # Select section
-    # -------------------------------------------------------------------------
+    # Antipodal longitude for the over-pole extension
+    if lon_value < 0 and lon_value >= -180:
+        lon_value = lon_value + 180
+        
+    # Primary slice from start_lon and secondary for lon_value intersecting at the pole
     df_primary = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
+    ].copy()
+
+    df_antipodal = df_sampled[
         (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
         (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
     ].copy()
 
-    df_antipodal = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= lon_antipodal - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= lon_antipodal + tol)
-    ].copy()
+    df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
 
-    df_lon_slice = pd.concat(
-        [df_primary, df_antipodal],
-        ignore_index=True
-    )
-
-    # -------------------------------------------------------------------------
-    # Depth cutoff
-    # -------------------------------------------------------------------------
-    df_lon_slice = df_lon_slice[
-        df_lon_slice['Depth_[m]'] <= max_depth
-    ].copy()
-
-    # -------------------------------------------------------------------------
-    # Great-circle distance
-    # -------------------------------------------------------------------------
+    # Compute great-circle distance from start point
     df_lon_slice['dist_km'] = compute_great_circle_distance_km(
-        start_lat,
-        start_lon,
+        start_lat, start_lon,
         df_lon_slice['Latitude_[deg_N]'].values,
         df_lon_slice['Longitude_[deg_E]'].values
     )
 
-    # -------------------------------------------------------------------------
     # Bin coordinates
-    # -------------------------------------------------------------------------
     df_lon_slice['depth_bin'] = (
         np.floor(df_lon_slice['Depth_[m]'] / depth_bin_size)
         * depth_bin_size
@@ -787,9 +768,7 @@ def cross_sec_lon_prob2(
         * dist_bin_size
     )
 
-    # -------------------------------------------------------------------------
     # Average probabilities within bins
-    # -------------------------------------------------------------------------
     prob_cols = [f'prob_cluster_{i}' for i in range(n_clusters)]
 
     df_binned = (
@@ -799,9 +778,7 @@ def cross_sec_lon_prob2(
         .reset_index()
     )
 
-    # -------------------------------------------------------------------------
     # Regular plotting grid
-    # -------------------------------------------------------------------------
     xi = np.arange(
         df_binned['dist_bin'].min(),
         df_binned['dist_bin'].max(),
@@ -816,9 +793,7 @@ def cross_sec_lon_prob2(
 
     XI, YI = np.meshgrid(xi, yi)
 
-    # -------------------------------------------------------------------------
     # Figure
-    # -------------------------------------------------------------------------
     fig = plt.figure(figsize=(12, 8))
     gs = fig.add_gridspec(int(np.floor(n_clusters/2)), int(np.floor(n_clusters/2)), 
                           width_ratios=[1, 1, 0.1], wspace=0.4, hspace=0.5)
@@ -829,15 +804,11 @@ def cross_sec_lon_prob2(
             axes.append(fig.add_subplot(gs[i, j]))
     
     cax = fig.add_subplot(gs[:, 2])
-    # -------------------------------------------------------------------------
     # Plot each field
-    # -------------------------------------------------------------------------
     for i, ax in enumerate(axes):
 
         col = f'prob_cluster_{i}'
-        # -------------------------------------------------------------
         # Interpolate onto regular grid
-        # -------------------------------------------------------------
         ZI = griddata(
             (
                 df_binned['dist_bin'],
@@ -848,14 +819,10 @@ def cross_sec_lon_prob2(
             method='linear'
         )
 
-        # -------------------------------------------------------------
         # Smooth field
-        # -------------------------------------------------------------
         ZI = gaussian_filter(ZI, sigma=1.0)
 
-        # -------------------------------------------------------------
         # Plot
-        # -------------------------------------------------------------
         pcm = ax.pcolormesh(
             XI,
             YI,
@@ -878,15 +845,11 @@ def cross_sec_lon_prob2(
         ax.set_xlabel(f'Distance (km) from 70°N, 140°W')
         ax.set_ylabel('Depth (m)')
 
-    # -------------------------------------------------------------------------
     # Shared colorbar
-    # -------------------------------------------------------------------------
     cbar = fig.colorbar(pcm, cax=cax)
     cbar.set_label('Probability (%)', fontsize=12)
 
-    # -------------------------------------------------------------------------
     # Title
-    # -------------------------------------------------------------------------
     fig.suptitle(
         'GMM Cluster Probabilities — Cross Section through North Pole',
         fontsize=18,
