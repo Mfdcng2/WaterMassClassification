@@ -956,3 +956,32 @@ def method34(df, seed=22, year_rng_0=[1980,2000], year_rng_1=[2000,2023], thresh
     df_sampled = df_sampled.groupby('month').apply(lambda x: x.sample(n=int(average_monthly_count), random_state=seed) if len(x) > average_monthly_count else x).reset_index(drop=True)
 
     return df_sampled
+
+from matplotlib.ticker import ScalarFormatter
+
+def feature_histograms(df, feat_col='Conservative_Temperature_[deg_C]', label_col='gmm_label_6', feature='Temperature [°C]'):
+    n_clusters = df[label_col].nunique()
+    colors = plt.cm.viridis(np.linspace(0, 1, n_clusters))
+
+    fig, axes = plt.subplots(n_clusters, 1, figsize=(22, 15), sharex=True)
+
+    if n_clusters == 1:
+        axes = [axes]
+
+    for i, ax in enumerate(axes):
+        cluster_data = df[df[label_col] == i][feat_col]
+        ax.hist(cluster_data, bins=50, alpha=0.5, color=colors[i], label=f'Cluster {i}')
+        ax.legend()
+        ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+        ax.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+
+    fig.supxlabel(feature)
+    fig.supylabel('Frequency', x=0.01)
+    fig.suptitle(feature + ' Histograms by GMM Cluster')
+
+    x_min = df[feat_col].min()
+    x_max = df[feat_col].max()
+    axes[0].set_xlim(x_min, x_max)
+
+    plt.tight_layout()
+    plt.show()
