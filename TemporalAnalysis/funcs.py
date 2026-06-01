@@ -771,9 +771,9 @@ def cross_sec_lon_prob2(
     XI, YI = np.meshgrid(xi, yi)
 
     # Figure
-    fig = plt.figure(figsize=(12, 8))
+    fig = plt.figure(figsize=(n_clusters*2, n_clusters+2))
     gs = fig.add_gridspec(int(np.floor(n_clusters/2)), int(np.floor(n_clusters/2)), 
-                          width_ratios=[1, 1, 0.1], wspace=0.4, hspace=0.5)
+                          width_ratios=[1, 1, 0.1], wspace=0.4, hspace=0.5) # widthratios are not interactive with n_clusters, so we set a fixed ratio for the colorbar columnrrr
 
     axes = []
     for i in range(int(np.floor(n_clusters/2))):
