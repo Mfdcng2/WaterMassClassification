@@ -584,7 +584,7 @@ def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, st
         cmap=cmap,
         norm=norm,
         s=8,
-        alpha=0.6
+        alpha=0.3
     )
 
     ax.invert_yaxis()
