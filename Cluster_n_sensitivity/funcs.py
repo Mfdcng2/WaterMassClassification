@@ -985,3 +985,163 @@ def feature_histograms(df, feat_col='Conservative_Temperature_[deg_C]', label_co
 
     plt.tight_layout()
     plt.show()
+
+
+    """
+Autocorrelation Matrix Between DataFrame Features
+===================================================
+Computes the lag-k autocorrelation for each numeric column in a pandas
+DataFrame, then visualises the result as a heatmap.
+
+Note on terminology
+-------------------
+"Autocorrelation matrix" can mean two things depending on context:
+
+  (A) Cross-correlation / Pearson correlation matrix  ← df.corr()
+      Measures linear association *between different columns* at lag-0.
+
+  (B) Per-feature autocorrelation matrix              ← this file
+      For each numeric column, computes its autocorrelation at lags
+      0, 1, 2, …, max_lag.  The result is a (n_features × n_lags) matrix.
+
+This script implements (B), which is the standard meaning in time-series
+analysis. If you want (A) instead, see the one-liner at the bottom.
+"""
+
+import seaborn as sns
+from matplotlib.colors import TwoSlopeNorm
+
+
+# ── 1. Core function ─────────────────────────────────────────────────────────
+
+def autocorrelation_matrix(df: pd.DataFrame, max_lag: int = 20) -> pd.DataFrame:
+    """
+    Compute the autocorrelation of every numeric column at lags 0…max_lag.
+
+    Parameters
+    ----------
+    df       : DataFrame whose numeric columns will be analysed.
+    max_lag  : Maximum lag to compute (inclusive).
+
+    Returns
+    -------
+    acf_df : DataFrame of shape (n_numeric_features, max_lag+1).
+             Index   = column names from df.
+             Columns = lag values [0, 1, 2, …, max_lag].
+             Values  = Pearson autocorrelation at that lag (always 1.0 at lag-0).
+    """
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if not numeric_cols:
+        raise ValueError("DataFrame contains no numeric columns.")
+
+    lags = range(max_lag + 1)
+    acf_values = {}
+
+    for col in numeric_cols:
+        series = df[col].dropna()
+        acf_values[col] = [series.autocorr(lag=lag) for lag in lags]
+
+    acf_df = pd.DataFrame(acf_values, index=list(lags)).T
+    acf_df.columns.name = "lag"
+    return acf_df
+
+
+# ── 2. Plotting function ──────────────────────────────────────────────────────
+
+def plot_autocorrelation_matrix(
+    acf_df: pd.DataFrame,
+    title: str = "Autocorrelation Matrix",
+    figsize: tuple = (14, 6),
+    cmap: str = "coolwarm",
+    annot: bool = True,
+    fmt: str = ".2f",
+) -> plt.Figure:
+    """
+    Visualise the autocorrelation matrix as a heatmap.
+
+    Parameters
+    ----------
+    acf_df   : Output of autocorrelation_matrix().
+    title    : Plot title.
+    figsize  : (width, height) in inches.
+    cmap     : Matplotlib colormap name.
+    annot    : Whether to annotate cells with numeric values.
+    fmt      : Format string for annotations.
+
+    Returns
+    -------
+    fig : Matplotlib Figure object.
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Diverging normalisation centred on 0
+    norm = TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
+
+    sns.heatmap(
+        acf_df,
+        ax=ax,
+        cmap=cmap,
+        norm=norm,
+        annot=annot,
+        fmt=fmt,
+        linewidths=0.4,
+        linecolor="white",
+        cbar_kws={"label": "Autocorrelation", "shrink": 0.8},
+    )
+
+    ax.set_title(title, fontsize=14, fontweight="bold", pad=12)
+    ax.set_xlabel("Lag", fontsize=11)
+    ax.set_ylabel("Feature", fontsize=11)
+    ax.tick_params(axis="x", labelrotation=0)
+    ax.tick_params(axis="y", labelrotation=0)
+
+    plt.tight_layout()
+    return fig
+
+
+# ── 3. Demo ───────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    # --- Synthetic time-series data ---
+    np.random.seed(42)
+    n = 200
+
+    t = np.linspace(0, 4 * np.pi, n)
+    df_demo = pd.DataFrame({
+        "AR(1) ρ=0.9": pd.Series(
+            [0.0] + [None] * (n - 1), dtype=float
+        ),  # filled below
+        "White noise":  np.random.randn(n),
+        "Sine wave":    np.sin(t) + 0.2 * np.random.randn(n),
+        "Random walk":  np.cumsum(np.random.randn(n)),
+    })
+
+    # Build AR(1) series manually
+    ar = [0.0]
+    for _ in range(n - 1):
+        ar.append(0.9 * ar[-1] + np.random.randn())
+    df_demo["AR(1) ρ=0.9"] = ar
+
+    # Compute autocorrelation matrix
+    acf = autocorrelation_matrix(df_demo, max_lag=30)
+    print("Autocorrelation matrix (first 5 lags):")
+    print(acf.iloc[:, :6].to_string())
+    print()
+
+    # Plot
+    fig = plot_autocorrelation_matrix(
+        acf,
+        title="Autocorrelation Matrix — Demo Signals",
+        figsize=(16, 5),
+        annot=False,        # turn on for small matrices; noisy for 30 lags
+    )
+    out_path = "autocorrelation_matrix_demo.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved → {out_path}")
+
+    # ── (A) Cross-correlation / Pearson matrix ────────────────────────────────
+    # If you actually want correlation *between* features (not within each
+    # feature over time), pandas gives you this in one line:
+    pearson_corr = df_demo.corr()          # lag-0 cross-correlation
+    print("\nPearson (cross-)correlation matrix:")
+    print(pearson_corr.to_string())
