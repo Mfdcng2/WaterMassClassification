@@ -251,6 +251,72 @@ def plot_heatmap_npts_xy(ds_cleaned, n_x_bins=100, n_y_bins=100, bin_max=None, p
 
     plt.show()
 
+def plot_heatmap_xy(ds_cleaned, n_x_bins=100, n_y_bins=100, projection='npstere', projection_name='Polar Stereographic'):
+    lat_min = ds_cleaned['Latitude_[deg_N]'].min()
+    resolution = 'l'
+
+    fig = plt.figure(figsize=(8, 8), dpi=300)
+    m = Basemap(projection=projection, boundinglat=lat_min, lon_0=0, resolution=resolution)
+
+    # Convert lat/lon → x/y (projection coordinates in meters)
+    lon_vals = ds_cleaned['Longitude_[deg_E]'].values
+    lat_vals = ds_cleaned['Latitude_[deg_N]'].values
+
+    # Reproject lat/lon to x/y
+    x_vals, y_vals = m(lon_vals, lat_vals)
+
+    # Define XY bin edges
+    x_min, x_max = x_vals.min(), x_vals.max()
+    y_min, y_max = y_vals.min(), y_vals.max()
+
+    x_bins = np.linspace(x_min, x_max, n_x_bins + 1)
+    y_bins = np.linspace(y_min, y_max, n_y_bins + 1)
+
+    # Grid to store max depth
+    H = np.zeros((n_x_bins, n_y_bins))
+
+    # Digitize into bins
+    x_idx = np.digitize(x_vals, x_bins) - 1
+    y_idx = np.digitize(y_vals, y_bins) - 1
+
+    # find max depth in each bin
+    for i in range(len(x_vals)):
+        xi, yi = x_idx[i], y_idx[i]
+        if 0 <= xi < n_x_bins and 0 <= yi < n_y_bins:
+            H[xi, yi] = max(H[xi, yi], ds_cleaned['Depth_[m]'].values[i])
+
+    # Create meshgrid for plotting
+    X, Y = np.meshgrid(x_bins, y_bins)
+
+    # Colormap
+    cmap = plt.get_cmap('Wistia').copy()
+    cmap.set_under(color='white', alpha=1.0)
+    cmap.set_over(color='white', alpha=1.0)
+
+    bin_max = H.max()
+
+    # Plot heatmap
+    m.pcolormesh(X, Y, H.T, cmap=cmap, vmin=1, vmax=bin_max)
+
+    # Draw bin grid (in xy space)
+    for xb in x_bins:
+        plt.plot([xb]*len(y_bins), y_bins, color='grey', linewidth=0.05, zorder=3)
+    for yb in y_bins:
+        plt.plot(x_bins, [yb]*len(x_bins), color='grey', linewidth=0.05, zorder=3)
+
+    # Plot coastlines on top
+    m.drawcoastlines()
+    m.fillcontinents(color='lightgrey', lake_color='lightblue')
+
+    cbar = m.colorbar(location='bottom', pad="5%")
+    cbar.set_label('Maximum Depth in bin (m)')
+
+    plt.xticks([])
+    plt.yticks([])
+    plt.title('Maximum Depth per Bin in '+ f'({projection_name} Projection)')
+
+    plt.show()
+
 def profileNo_vs_latlon_bins(
     df: pd.DataFrame,
     lat_step: float,
