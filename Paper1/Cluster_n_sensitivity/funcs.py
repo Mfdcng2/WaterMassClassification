@@ -129,7 +129,7 @@ def profileNo_vs_xy_bins(
 
     return g_len_sorted[transition_point]
 
-def plot_geo(df, n_clusters=4):
+def plot_geo(df, n_clusters=4, browser=False):
     # Compute data centroid (mean location)
     center_lat = df['Latitude_[deg_N]'].mean()
     center_lon = df['Longitude_[deg_E]'].mean()
@@ -185,6 +185,10 @@ def plot_geo(df, n_clusters=4):
         legend_traceorder="normal"
     )
 
+    if browser:
+        fig.show(renderer='browser')
+    else:
+        fig.show()
     return fig
 
 def plot_heatmap_npts_xy(ds_cleaned, n_x_bins=100, n_y_bins=100, bin_max=None, projection='npstere', projection_name='Polar Stereographic'):
@@ -463,7 +467,7 @@ def sample_cap_bins_xy(df, thresh, n_x_bins, n_y_bins):
     df_sampled = df.iloc[sampled_indices].copy()
     return df_sampled
 
-def plot_3d(n_clusters, df_sampled):
+def plot_3d(n_clusters, df_sampled, browser=False):
     #Plot in 3D
     colors = px.colors.sample_colorscale(
         px.colors.sequential.Viridis_r,
@@ -519,7 +523,10 @@ def plot_3d(n_clusters, df_sampled):
         legend_traceorder="normal"
     )
 
-    fig_3d.show()
+    if browser:
+        fig_3d.show(renderer='browser')
+    else:
+        fig_3d.show()
 
 
 # Cross section like Kate's
@@ -627,7 +634,7 @@ def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, st
     plt.show()
 
 
-def cross_sec_lon_prob(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0):
+def cross_sec_lon_prob(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0, browser=False):
     # Antipodal longitude for the over-pole extension
     #lon_value = lon_value if lon_value <= 180 & lon_value >=0 else lon_value + 180
     if lon_value < 0 and lon_value >= -180:
@@ -716,7 +723,10 @@ def cross_sec_lon_prob(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.
         fontsize=13
     )
 
-    plt.show()
+    if browser:
+        plt.show(renderer='browser')
+    else:
+        plt.show()
 
 
 from scipy.interpolate import griddata
@@ -731,7 +741,8 @@ def cross_sec_lon_prob2(
     start_lon=-140.0,
     max_depth=850,
     depth_bin_size=10,
-    dist_bin_size=2.2
+    dist_bin_size=2.2,
+    browser=False
 ):
     # Antipodal longitude for the over-pole extension
     if lon_value < 0 and lon_value >= -180:
@@ -856,8 +867,10 @@ def cross_sec_lon_prob2(
         y=0.98
     )
 
-    plt.tight_layout()
-    plt.show()
+    if browser:
+        plt.show(renderer='browser')
+    else:
+        plt.show()
 
 import gsw
 def calc_pv(df):
