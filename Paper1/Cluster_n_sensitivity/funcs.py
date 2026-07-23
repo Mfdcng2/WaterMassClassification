@@ -129,7 +129,7 @@ def profileNo_vs_xy_bins(
 
     return g_len_sorted[transition_point]
 
-def plot_geo(df, n_clusters=4, browser=False):
+def plot_geo(df, n_clusters=4, color='gmm_label', browser=False):
     # Compute data centroid (mean location)
     center_lat = df['Latitude_[deg_N]'].mean()
     center_lon = df['Longitude_[deg_E]'].mean()
@@ -149,7 +149,7 @@ def plot_geo(df, n_clusters=4, browser=False):
         df,
         lat='Latitude_[deg_N]',
         lon='Longitude_[deg_E]',
-        color='gmm_label_'+str(n_clusters),
+        color=color,
         color_continuous_scale=discrete_colorscale,
         range_color=(0, n_clusters),
         title="GMM clusters using sampled TS on Geographic Map"
@@ -467,7 +467,7 @@ def sample_cap_bins_xy(df, thresh, n_x_bins, n_y_bins):
     df_sampled = df.iloc[sampled_indices].copy()
     return df_sampled
 
-def plot_3d(n_clusters, df_sampled, browser=False):
+def plot_3d(n_clusters, df_sampled, color='gmm_label', browser=False):
     #Plot in 3D
     colors = px.colors.sample_colorscale(
         px.colors.sequential.Viridis_r,
@@ -485,7 +485,7 @@ def plot_3d(n_clusters, df_sampled, browser=False):
         x='Latitude_[deg_N]',
         y='Longitude_[deg_E]',
         z='Depth_[m]',
-        color='gmm_label_'+str(n_clusters),
+        color=color,
         color_continuous_scale=discrete_colorscale,
         range_color=(0, n_clusters),
         title="3D Scatter Lat-Lon-Depth plot of GMM clusters"
