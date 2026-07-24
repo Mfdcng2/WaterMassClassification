@@ -972,9 +972,9 @@ def method34(df, seed=22, year_rng_0=[1980,2000], year_rng_1=[2000,2023], thresh
 
 from matplotlib.ticker import ScalarFormatter
 
-def feature_histograms(df, feat_col='Conservative_Temperature_[deg_C]', label_col='gmm_label_6', feature='Temperature [°C]'):
+def feature_histograms(df, feat_col='Conservative_Temperature_[deg_C]', label_col='gmm_label_6', feature='Temperature [°C]', x_min=None, x_max=None):
     n_clusters = df[label_col].nunique()
-    colors = plt.cm.viridis(np.linspace(0, 1, n_clusters))
+    colors = plt.cm.viridis_r(np.linspace(0, 1, n_clusters))
 
     fig, axes = plt.subplots(n_clusters, 1, figsize=(22, 15), sharex=True)
 
@@ -992,8 +992,10 @@ def feature_histograms(df, feat_col='Conservative_Temperature_[deg_C]', label_co
     fig.supylabel('Frequency', x=0.01)
     fig.suptitle(feature + ' Histograms by GMM Cluster')
 
-    x_min = df[feat_col].min()
-    x_max = df[feat_col].max()
+    if x_min is None:
+        x_min = df[feat_col].min()
+    if x_max is None:
+        x_max = df[feat_col].max()
     axes[0].set_xlim(x_min, x_max)
 
     plt.tight_layout()
