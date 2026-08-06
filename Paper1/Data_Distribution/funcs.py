@@ -184,7 +184,7 @@ def plot_geo(df, n_clusters=4):
 
     return fig
 
-def plot_heatmap_npts_xy(ds_cleaned, n_x_bins=100, n_y_bins=100, bin_max=None, projection='npstere', projection_name='Polar Stereographic'):
+def plot_heatmap_npts_xy(ds_cleaned, n_x_bins=100, n_y_bins=100, bin_max=None, projection='npstere', projection_name='Polar Stereographic', static_scale=False, static_max=None):
     lat_min = ds_cleaned['Latitude_[deg_N]'].min()
     resolution = 'l'
 
@@ -230,7 +230,10 @@ def plot_heatmap_npts_xy(ds_cleaned, n_x_bins=100, n_y_bins=100, bin_max=None, p
         bin_max = H.max()
 
     # Plot heatmap
-    m.pcolormesh(X, Y, H.T, cmap=cmap, vmin=1, vmax=bin_max)
+    if static_scale and static_max is not None:
+        m.pcolormesh(X, Y, H.T, cmap=cmap, vmin=1, vmax=static_max)
+    else:
+        m.pcolormesh(X, Y, H.T, cmap=cmap, vmin=1, vmax=bin_max)
 
     # Draw bin grid (in xy space)
     for xb in x_bins:
