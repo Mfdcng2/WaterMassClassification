@@ -1304,3 +1304,352 @@ if __name__ == "__main__":
     pearson_corr = df_demo.corr()          # lag-0 cross-correlation
     print("\nPearson (cross-)correlation matrix:")
     print(pearson_corr.to_string())
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def cross_sec_lon_prob3(
+    df_sampled,
+    n_clusters,
+    lon_value,
+    tol=0.5,
+    start_lat=70.0,
+    start_lon=-140.0,
+    max_depth=850,
+    point_size=8,
+    browser=False
+):
+    """
+    Same as cross_sec_lon_prob2, but plots each sample point directly
+    (as a scatter point colored by its own probability value) instead
+    of binning + averaging + interpolating onto a grid.
+    """
+
+    # Antipodal longitude for the over-pole extension
+    if lon_value < 0 and lon_value >= -180:
+        lon_value = lon_value + 180
+
+    # Primary slice from start_lon and secondary for lon_value intersecting at the pole
+    df_primary = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
+    ].copy()
+
+    df_antipodal = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+    ].copy()
+
+    df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
+
+    # Compute great-circle distance from start point
+    df_lon_slice['dist_km'] = compute_great_circle_distance_km(
+        start_lat, start_lon,
+        df_lon_slice['Latitude_[deg_N]'].values,
+        df_lon_slice['Longitude_[deg_E]'].values
+    )
+
+    # No binning, no averaging, no griddata, no smoothing — plot raw points.
+
+    prob_cols = [f'prob_cluster_{i}' for i in range(n_clusters)]
+
+    # Figure
+    fig = plt.figure(figsize=(12, 8))
+    gs = fig.add_gridspec(
+        int(np.floor(n_clusters / 2)), int(np.floor(n_clusters / 2)),
+        width_ratios=[1, 1, 0.1], wspace=0.4, hspace=0.5
+    )
+
+    axes = []
+    for i in range(int(np.floor(n_clusters / 2))):
+        for j in range(int(np.floor(n_clusters / 3))):
+            axes.append(fig.add_subplot(gs[i, j]))
+    cax = fig.add_subplot(gs[:, 2])
+
+    # Plot each field
+    sc = None
+    for i, ax in enumerate(axes):
+        col = f'prob_cluster_{i}'
+
+        sc = ax.scatter(
+            df_lon_slice['dist_km'],
+            df_lon_slice['Depth_[m]'],
+            c=df_lon_slice[col] * 100,
+            cmap='viridis',
+            vmin=0,
+            vmax=100,
+            s=point_size,
+            edgecolors='none'
+        )
+
+        # Pole marker
+        ax.axvline(
+            2200,
+            color='white',
+            linestyle='--',
+            linewidth=1
+        )
+
+        # Formatting
+        ax.set_ylim(max_depth, 0)
+        ax.set_title(f'Cluster {i} Probability')
+        ax.set_xlabel('Distance (km) from 70°N, 140°W')
+        ax.set_ylabel('Depth (m)')
+
+    # Shared colorbar (built from the last scatter's mappable)
+    cbar = fig.colorbar(sc, cax=cax)
+    cbar.set_label('Probability (%)', fontsize=12)
+
+    # Title
+    fig.suptitle(
+        'GMM Cluster Probabilities — Cross Section through North Pole (raw points)',
+        fontsize=18,
+        y=0.98
+    )
+
+    if browser:
+        plt.show(renderer='browser')
+    else:
+        plt.show()
+
+
+def cross_sec_lon_var(
+    df_sampled,
+    n_clusters,
+    lon_value,
+    tol=0.5,
+    start_lat=70.0,
+    start_lon=-140.0,
+    max_depth=850,
+    depth_bin_size=10,
+    dist_bin_size=2.2,
+    browser=False
+):
+    # Antipodal longitude for the over-pole extension
+    if lon_value < 0 and lon_value >= -180:
+        lon_value = lon_value + 180
+        
+    # Primary slice from start_lon and secondary for lon_value intersecting at the pole
+    df_primary = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
+    ].copy()
+
+    df_antipodal = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+    ].copy()
+
+    df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
+
+    # Compute great-circle distance from start point
+    df_lon_slice['dist_km'] = compute_great_circle_distance_km(
+        start_lat, start_lon,
+        df_lon_slice['Latitude_[deg_N]'].values,
+        df_lon_slice['Longitude_[deg_E]'].values
+    )
+
+    # Bin coordinates
+    df_lon_slice['depth_bin'] = (
+        np.floor(df_lon_slice['Depth_[m]'] / depth_bin_size)
+        * depth_bin_size
+    )
+
+    df_lon_slice['dist_bin'] = (
+        np.floor(df_lon_slice['dist_km'] / dist_bin_size)
+        * dist_bin_size
+    )
+
+    # Average probabilities within bins
+    prob_cols = [f'var_per_sample_{i}' for i in range(n_clusters)]
+
+    df_binned = (
+        df_lon_slice
+        .groupby(['dist_bin', 'depth_bin'])[prob_cols]
+        .mean()
+        .reset_index()
+    )
+
+    # Regular plotting grid
+    xi = np.arange(
+        df_binned['dist_bin'].min(),
+        df_binned['dist_bin'].max(),
+        dist_bin_size
+    )
+
+    yi = np.arange(
+        0,
+        max_depth + depth_bin_size,
+        depth_bin_size
+    )
+
+    XI, YI = np.meshgrid(xi, yi)
+
+    # Figure
+    fig = plt.figure(figsize=(12, 8))
+    gs = fig.add_gridspec(int(np.floor(n_clusters/2)), int(np.floor(n_clusters/2)), 
+                          width_ratios=[1, 1, 0.1], wspace=0.4, hspace=0.5)
+
+    axes = []
+    for i in range(int(np.floor(n_clusters/2))):
+        for j in range(int(np.floor(n_clusters/3))):
+            axes.append(fig.add_subplot(gs[i, j]))
+    
+    cax = fig.add_subplot(gs[:, 2])
+    # Plot each field
+    for i, ax in enumerate(axes):
+
+        col = f'var_per_sample_{i}'
+        # Interpolate onto regular grid
+        ZI = griddata(
+            (
+                df_binned['dist_bin'],
+                df_binned['depth_bin']
+            ),
+            df_binned[col] * 100,
+            (XI, YI),
+            method='linear'
+        )
+
+        # Smooth field
+        ZI = gaussian_filter(ZI, sigma=1.0)
+
+        # Plot
+        pcm = ax.pcolormesh(
+            XI,
+            YI,
+            ZI,
+            shading='auto',
+            cmap='viridis',
+            vmin=0,
+            vmax=np.nanmax(ZI))
+
+        # Pole marker
+        ax.axvline(
+            2200,
+            color='white',
+            linestyle='--',
+            linewidth=1)
+
+        # Formatting
+        ax.set_ylim(max_depth, 0)
+        ax.set_title(f'Cluster {i} Variance')
+        ax.set_xlabel(f'Distance (km) from 70°N, 140°W')
+        ax.set_ylabel('Depth (m)')
+
+    # Shared colorbar
+    cbar = fig.colorbar(pcm, cax=cax)
+    cbar.set_label('Variance', fontsize=12)
+
+    # Title
+    fig.suptitle(
+        'GMM Cluster Variance — Cross Section through North Pole',
+        fontsize=18,
+        y=0.98
+    )
+
+    if browser:
+        plt.show(renderer='browser')
+    else:
+        plt.show()
+
+def cross_sec_lon_var2(
+    df_sampled,
+    n_clusters,
+    lon_value,
+    tol=0.5,
+    start_lat=70.0,
+    start_lon=-140.0,
+    max_depth=850,
+    point_size=8,
+    browser=False
+):
+    """
+    Same as cross_sec_lon_prob2, but plots each sample point directly
+    (as a scatter point colored by its own probability value) instead
+    of binning + averaging + interpolating onto a grid.
+    """
+
+    # Antipodal longitude for the over-pole extension
+    if lon_value < 0 and lon_value >= -180:
+        lon_value = lon_value + 180
+
+    # Primary slice from start_lon and secondary for lon_value intersecting at the pole
+    df_primary = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
+    ].copy()
+
+    df_antipodal = df_sampled[
+        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+    ].copy()
+
+    df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
+
+    # Compute great-circle distance from start point
+    df_lon_slice['dist_km'] = compute_great_circle_distance_km(
+        start_lat, start_lon,
+        df_lon_slice['Latitude_[deg_N]'].values,
+        df_lon_slice['Longitude_[deg_E]'].values
+    )
+
+    # Figure
+    fig = plt.figure(figsize=(12, 8))
+    gs = fig.add_gridspec(
+        int(np.floor(n_clusters / 2)), int(np.floor(n_clusters / 2)),
+        width_ratios=[1, 1, 0.1], wspace=0.4, hspace=0.5
+    )
+
+    axes = []
+    for i in range(int(np.floor(n_clusters / 2))):
+        for j in range(int(np.floor(n_clusters / 3))):
+            axes.append(fig.add_subplot(gs[i, j]))
+    cax = fig.add_subplot(gs[:, 2])
+
+    # Plot each field
+    sc = None
+    for i, ax in enumerate(axes):
+        col = f'var_per_sample_{i}'
+
+        sc = ax.scatter(
+            df_lon_slice['dist_km'],
+            df_lon_slice['Depth_[m]'],
+            c=df_lon_slice[col] * 100,
+            cmap='viridis',
+            vmin=0,
+            vmax=1,
+            s=point_size,
+            edgecolors='none'
+        )
+
+        # Pole marker
+        ax.axvline(
+            2200,
+            color='white',
+            linestyle='--',
+            linewidth=1
+        )
+
+        # Formatting
+        ax.set_ylim(max_depth, 0)
+        ax.set_title(f'Cluster {i} Variance')
+        ax.set_xlabel('Distance (km) from 70°N, 140°W')
+        ax.set_ylabel('Depth (m)')
+
+    # Shared colorbar (built from the last scatter's mappable)
+    cbar = fig.colorbar(sc, cax=cax)
+    cbar.set_label('Variance', fontsize=12)
+
+    # Title
+    fig.suptitle(
+        'GMM Cluster Variances — Cross Section through North Pole (raw points)',
+        fontsize=18,
+        y=0.98
+    )
+
+    if browser:
+        plt.show(renderer='browser')
+    else:
+        plt.show()
