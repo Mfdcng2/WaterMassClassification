@@ -1,9 +1,10 @@
 numpy
 pandas
 matplotlib
-sckit-learn
 cartopy
 plotly
 basemap
 gsw
 tqdm
+scikit-learn
+seaborn
