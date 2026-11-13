@@ -5,9 +5,33 @@ from mpl_toolkits.basemap import Basemap
 import plotly.graph_objs as go
 from collections import defaultdict
 import plotly.express as px
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from pyproj import Geod
+from matplotlib.colors import ListedColormap, BoundaryNorm
+from scipy.interpolate import griddata
+from scipy.ndimage import gaussian_filter
+import gsw
+from matplotlib.ticker import ScalarFormatter
+import seaborn as sns
+from matplotlib.colors import TwoSlopeNorm
 
 # Sample bins of bins (geographical and depth bins) in projection space
 def sample_bins_of_bins_proj(df, n_x_bins=100, n_y_bins=100, n_depth_bins=5, projection='npstere', min_flag=True):
+    """
+    Separates the dataset by creating bins in projection space (default: Polar Stereographic Projection) and depth, and randomly samples from each (x,y,depth) bin.
+
+    Args:
+        - df (pd.DataFrame): The dataset to sample.
+        - n_x_bins (int): Number of bins in the x axis. Defaults to 100.
+        - n_y_bins (int): Number of bins in the y axis. Defaults to 100.
+        - n_depth_bins (int): Number of bins in the depth axis. Defaults to 5.
+        - projection (str): Basemap projection string. Defaults to 'npstere' (Polar Stereographic Projection).
+        - min_flag (bool): If True, sample the minimum number of points from each bin. If False, sample the average number of points from each bin. Defaults to True.
+    
+    Returns:
+        - df_sampled (pd.DataFrame): The sampled dataset in pandas dataframe.
+    """
     # Define minimum latitude for projection
     lat_min = df['Latitude_[deg_N]'].min()
 
@@ -34,11 +58,11 @@ def sample_bins_of_bins_proj(df, n_x_bins=100, n_y_bins=100, n_depth_bins=5, pro
     # Find bin with least data points and sample that many points from each bin
     if min_flag:
         min_count = df.groupby(['x_bin', 'y_bin', 'depth_bin']).size().min()
-        sampled_df = df.groupby(['x_bin', 'y_bin', 'depth_bin']).apply(lambda x: x.sample(min_count, random_state=22)).reset_index(drop=True)
+        df_sampled = df.groupby(['x_bin', 'y_bin', 'depth_bin']).apply(lambda x: x.sample(min_count, random_state=22)).reset_index(drop=True)
     else:
         avg_count = df.groupby(['x_bin', 'y_bin', 'depth_bin']).size().mean().round().astype(int)
-        sampled_df = (df.groupby(['x_bin', 'y_bin', 'depth_bin'], group_keys=False).apply(lambda g: g.sample(n=min(len(g), avg_count), random_state=22)).reset_index(drop=True))
-    return sampled_df
+        df_sampled = (df.groupby(['x_bin', 'y_bin', 'depth_bin'], group_keys=False).apply(lambda g: g.sample(n=min(len(g), avg_count), random_state=22)).reset_index(drop=True))
+    return df_sampled
 
 def profileNo_vs_xy_bins(
     df: pd.DataFrame,
@@ -50,17 +74,20 @@ def profileNo_vs_xy_bins(
     showfig: bool = True
 ) -> None:
     """
-    Plot the number of profiles in each bin using polar stereographic projection.
+    Plots the number of profiles in each bin using 'npstere' (Polar Stereographic Projection).
+
     Args:
-        df (pd.DataFrame): The dataset to plot.
-        n_x_bins (int): Number of bins in the x direction. Defaults to 100.
-        n_y_bins (int): Number of bins in the y direction. Defaults to 100.
-        show_threshold (bool, optional): Whether to show the threshold marker. Defaults to False.
-        threshold_quantile (float, optional): The quantile value for threshold calculation. Defaults to 0.95.
-        projection (str, optional): Basemap projection string. Defaults to 'npstere'.
-        showfig (bool, optional): Whether to display the figure. Defaults to True.
+        - df (pd.DataFrame): The dataset to plot.
+        - n_x_bins (int): Number of bins in the x axis. Defaults to 100.
+        - n_y_bins (int): Number of bins in the y axis. Defaults to 100.
+        - show_threshold (bool, optional): Whether to show the threshold marker. Defaults to False.
+        - threshold_quantile (float, optional): The quantile value for threshold calculation. Defaults to 0.95.
+        - projection (str, optional): Basemap projection name. Defaults to 'npstere'.
+        - showfig (bool, optional): Whether to display the figure. Defaults to True.
+
     Returns:
-        None
+        - g_len_sorted[transition_point] (float | None): The number of profiles in the bin at the transition point, or None if no transition point is found.
+        - fig (plotly.graph_objs._figure.Figure): The Plotly figure object containing the scatter plot of number of profiles per bin.
     """
     # Set up the polar stereographic projection
     lat_min = df['Latitude_[deg_N]'].min()
@@ -130,6 +157,20 @@ def profileNo_vs_xy_bins(
     return g_len_sorted[transition_point]
 
 def plot_geo(df, n_clusters=4, color='gmm_label', browser=False):
+    """
+    Plots the geographic distribution of GMM clusters on a map. Given a dataset of points with latitude, longitude and the hard clustering label. 
+    This function visualises the clusters using a scatter plot on a geographic map. Note this is an interactive plot so it takes a while to render 
+    in a notebook and takes up a lot of memory. If you want to save memory, set browser=True and it will open in a new tab of your prefered browser.
+
+    Args:
+        - df (pd.DataFrame): DataFrame containing the data points with 'Latitude_[deg_N]', 'Longitude_[deg_E]', and the clustering label column.
+        - n_clusters (int): Number of clusters. Default is 4.
+        - color (str): Column name in df that contains the clustering labels. Default is 'gmm_label'.
+        - browser (bool): If True, the plot will be opened in a web browser, this saves memory when running in a notebook. Default is False.
+
+    Returns:
+        - fig (plotly.graph_objs._figure.Figure): The Plotly figure object containing the geographic scatter plot of clusters.
+    """
     # Compute data centroid (mean location)
     center_lat = df['Latitude_[deg_N]'].mean()
     center_lon = df['Longitude_[deg_E]'].mean()
@@ -191,16 +232,30 @@ def plot_geo(df, n_clusters=4, color='gmm_label', browser=False):
         fig.show()
     return fig
 
-def plot_heatmap_npts_xy(ds_cleaned, n_x_bins=100, n_y_bins=100, bin_max=None, projection='npstere', projection_name='Polar Stereographic'):
-    lat_min = ds_cleaned['Latitude_[deg_N]'].min()
+def plot_heatmap_npts_xy(df, n_x_bins=100, n_y_bins=100, bin_max=None, projection='npstere', projection_name='Polar Stereographic'):
+    """
+    Plots a heatmap of the number of points per bin in projection space (default: Polar Stereographic Projection).
+
+    Args:
+        - ds_cleaned (pd.DataFrame): The dataset to plot.
+        - n_x_bins (int): Number of bins in the x axis. Defaults to 100.
+        - n_y_bins (int): Number of bins in the y axis. Defaults to 100.
+        - bin_max (int, optional): Maximum value for color scale. If None, it will be set to the maximum count in the bins. Defaults to None.
+        - projection (str): Basemap projection string. Defaults to 'npstere' (Polar Stereographic Projection).
+        - projection_name (str): Name of the projection for the title. Defaults to 'Polar Stereographic'.
+    
+    Returns:
+        - fig (matplotlib.figure.Figure): The matplotlib figure object containing the heatmap of number of points per bin.
+    """
+    lat_min = df['Latitude_[deg_N]'].min()
     resolution = 'l'
 
     fig = plt.figure(figsize=(8, 8), dpi=300)
     m = Basemap(projection=projection, boundinglat=lat_min, lon_0=0, resolution=resolution)
 
     # Convert lat/lon → x/y (projection coordinates in meters)
-    lon_vals = ds_cleaned['Longitude_[deg_E]'].values
-    lat_vals = ds_cleaned['Latitude_[deg_N]'].values
+    lon_vals = df['Longitude_[deg_E]'].values
+    lat_vals = df['Latitude_[deg_N]'].values
 
     # Reproject lat/lon to x/y
     x_vals, y_vals = m(lon_vals, lat_vals)
@@ -265,6 +320,20 @@ def profileNo_vs_latlon_bins(
     show_threshold: bool = False,
     threshold_quantile: float = 0.95
 ) -> float | None:
+    """
+    Plots the number of profiles in each bin defined by latitude and longitude steps.
+
+    Args:
+        - df (pd.DataFrame): The dataset to plot.
+        - lat_step (float): Latitude step size in degrees.
+        - lon_step (float): Longitude step size in degrees.
+        - show_threshold (bool, optional): Whether to show the threshold marker. Defaults to False.
+        - threshold_quantile (float, optional): The quantile value for threshold calculation. Defaults to 0.95.
+
+    Returns:
+        - g_len_sorted[transition_point] (float | None): The number of profiles in the bin at the transition point, or None if no transition point is found.
+        - fig (plotly.graph_objs._figure.Figure): The Plotly figure object containing the scatter plot of number of profiles per bin.
+    """
     
     # === Identical bin construction to sample_cap_bins / plot_heatmap_npts ===
     lon_min, lon_max = -180, 180
@@ -334,6 +403,18 @@ def profileNo_vs_latlon_bins(
 
 
 def sample_cap_bins(df, thresh, lon_step=5, lat_step=5):
+    """
+    Samples the dataset by creating bins in latitude and longitude, and randomly samples from each bin.
+
+    Args:
+        - df (pd.DataFrame): The dataset to sample.
+        - thresh (int): Maximum number of samples to take from each bin.
+        - lon_step (float): Longitude step size in degrees. Defaults to 5.
+        - lat_step (float): Latitude step size in degrees. Defaults to 5.
+
+    Returns:
+        - df_sampled (pd.DataFrame): The sampled dataset in pandas dataframe.
+    """
     lon_min, lon_max = -180, 180
     lat_min, lat_max = 55, 90
 
@@ -366,11 +447,24 @@ def sample_cap_bins(df, thresh, lon_step=5, lat_step=5):
             )
         else:
             sampled_indices.extend(members)
+    
+    df_sampled = df.iloc[sampled_indices].copy()
 
-    return df.iloc[sampled_indices].copy()
+    return df_sampled
 
 
-def plot_heatmap_npts(ds_cleaned, lon_step=5, lat_step=5):
+def plot_heatmap_npts(df, lon_step=5, lat_step=5):
+    """
+    Plots a heatmap of the number of points per bin defined by latitude and longitude steps.
+
+    Args:
+        - df (pd.DataFrame): The dataset to plot.
+        - lon_step (float): Longitude step size in degrees. Defaults to 5.
+        - lat_step (float): Latitude step size in degrees. Defaults to 5.
+
+    Returns:
+        - fig (matplotlib.figure.Figure): The matplotlib figure object containing the heatmap of number of points per bin.
+    """
     lon_min, lon_max = -180, 180
     lat_min, lat_max = 55, 90
     resolution = 'l'
@@ -389,8 +483,8 @@ def plot_heatmap_npts(ds_cleaned, lon_step=5, lat_step=5):
     n_lon_bins = len(lon_bins) - 1
     n_lat_bins = len(lat_bins) - 1
 
-    lon_vals = ds_cleaned['Longitude_[deg_E]'].values
-    lat_vals = ds_cleaned['Latitude_[deg_N]'].values
+    lon_vals = df['Longitude_[deg_E]'].values
+    lat_vals = df['Latitude_[deg_N]'].values
 
     lon_idx = np.clip(np.digitize(lon_vals, lon_bins) - 1, 0, n_lon_bins - 1)
     lat_idx = np.clip(np.digitize(lat_vals, lat_bins) - 1, 0, n_lat_bins - 1)
@@ -432,6 +526,18 @@ def plot_heatmap_npts(ds_cleaned, lon_step=5, lat_step=5):
 
 
 def sample_cap_bins_xy(df, thresh, n_x_bins, n_y_bins):
+    """
+    Separate dataset into bins in projected (Polar Stereographic Projection) space and randomly sample from each bin.
+
+    Args:
+        - df (pd.DataFrame): The dataset to sample.
+        - thresh (int): Maximum number of samples to take from each bin.
+        - n_x_bins (int): Number of bins in the x axis. Defaults to 100.
+        - n_y_bins (int): Number of bins in the y axis. Defaults to 100.
+
+    Returns:
+        - df_sampled (pd.DataFrame): The sampled dataset in pandas dataframe.
+    """
     # Define projection and reproject lat/lon to x/y
     lat_min = df['Latitude_[deg_N]'].min()
     m = Basemap(projection='npstere', boundinglat=lat_min, lon_0=0, resolution='l')
@@ -467,7 +573,22 @@ def sample_cap_bins_xy(df, thresh, n_x_bins, n_y_bins):
     df_sampled = df.iloc[sampled_indices].copy()
     return df_sampled
 
-def plot_3d(n_clusters, df_sampled, color='gmm_label', browser=False):
+def plot_3d(df, n_clusters, color='gmm_label', browser=False):
+    """
+    Plots a 3D scatter plot of the sampled dataset with latitude, longitude, and depth. This is a very rudimentary way of plotting this data in 3D,
+    but it is useful for visualising the clusters in 3D space. This plot is a 3D cube so it distorts the longitude term significantly (in this case -180≠0).
+    Note this is an interactive plot so it takes a while to render in a notebook and takes up a lot of memory. If you want to save memory, 
+    set browser=True and it will open in a new tab of your prefered browser.
+
+    Args:
+        - df (pd.DataFrame): DataFrame containing the data points with 'Latitude_[deg_N]', 'Longitude_[deg_E]', 'Depth_[m]', and the clustering label column.
+        - n_clusters (int): Number of clusters.
+        - color (str): Column name in df that contains the clustering labels. Default is 'gmm_label'.
+        - browser (bool): If True, the plot will be opened in a web browser, this saves memory when running in a notebook. Default is False.
+    
+    Returns:
+        - fig_3d (plotly.graph_objs._figure.Figure): The Plotly figure object containing the 3D scatter plot of clusters.
+    """
     #Plot in 3D
     colors = px.colors.sample_colorscale(
         px.colors.sequential.Viridis_r,
@@ -481,7 +602,7 @@ def plot_3d(n_clusters, df_sampled, color='gmm_label', browser=False):
         discrete_colorscale.append([(i + 1) / n_clusters, c])
 
     fig_3d = px.scatter_3d(
-        df_sampled,
+        df,
         x='Latitude_[deg_N]',
         y='Longitude_[deg_E]',
         z='Depth_[m]',
@@ -530,13 +651,20 @@ def plot_3d(n_clusters, df_sampled, color='gmm_label', browser=False):
 
 
 # Cross section like Kate's
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-from pyproj import Geod
-from matplotlib.colors import ListedColormap, BoundaryNorm
-
 def compute_great_circle_distance_km(lat_ref, lon_ref, lats, lons):
-    """Compute distance in km from a reference point along a great circle."""
+    """
+    Auxiliary function to compute distance in km from a reference point along a great circle. This function is used for the cross section plots to compute 
+    the distance from the start point to each point in the dataset. 
+
+    Args:
+        - lat_ref (float): Latitude of the reference point in degrees.
+        - lon_ref (float): Longitude of the reference point in degrees.
+        - lats (np.ndarray): Array of latitudes of points to compute distance to.
+        - lons (np.ndarray): Array of longitudes of points to compute distance to.
+
+    Returns:
+        - dist_km (np.ndarray): Array of distances in kilometers from the reference point to each point in the input arrays.
+    """
     geod = Geod(ellps='WGS84')
     _, _, dist_m = geod.inv(
         np.full(len(lats), lon_ref),
@@ -547,17 +675,36 @@ def compute_great_circle_distance_km(lat_ref, lon_ref, lats, lons):
     return dist_m / 1000.0
 
 
-def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0):
+def cross_sec_lon(df, n_clusters, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0, save_fig=False, fig_name='cross_section_plot.png'):
+    """
+    Plots a cross-section of the dataset along a specified longitude, including the great-circle distance from a starting point. 
+    This function is useful for visualizing the distribution of points and their clustering along a specific longitudinal slice. 
+    This code is inspired by Oglethorpe et al (2026) to create similar transsect plots to their water mass fraction plots.
+    
+    Args:
+    - df (pd.DataFrame): The sampled dataset containing latitude, longitude, depth, and clustering labels.
+    - n_clusters (int): Number of clusters in the GMM model.
+    - lon_value (float): The longitude value for the cross-section slice (in degrees East).
+    - tol (float): Tolerance for selecting points around the specified longitude (in degrees). Default is 0.5.
+    - start_lat (float): Latitude of the starting point for distance calculation (in degrees North). Default is 70.0.
+    - start_lon (float): Longitude of the starting point for distance calculation (in degrees East). Default is -140.0.
+    - save_fig (bool): Whether to save the figure as a PNG file. Default is False.
+    - fig_name (str): Filename for saving the figure if save_fig is True. Default is 'cross_section_plot.png'.
+    
+    Returns:
+    - fig (matplotlib.figure.Figure): The matplotlib figure object containing the cross-section scatter plot and polar map, 
+    with the option of saving it as a PNG.
+    """
 
     # Primary slice from start_lon and secondary for lon_value intersecting at the pole
-    df_primary = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
+    df_primary = df[
+        (df['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df['Longitude_[deg_E]'] <= start_lon + tol)
     ].copy()
 
-    df_antipodal = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+    df_antipodal = df[
+        (df['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df['Longitude_[deg_E]'] <= lon_value + tol)
     ].copy()
 
     df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
@@ -630,25 +777,50 @@ def cross_sec_lon(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, st
 
     ax_map.set_title('Section Location', fontsize=9)
 
-    plt.tight_layout()
-    plt.show()
+    if save_fig:
+        plt.savefig(fig_name, dpi=300, bbox_inches='tight')
+    else:
+        plt.tight_layout()
+        plt.show()
 
 
-def cross_sec_lon_prob(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0, browser=False):
+
+
+def cross_sec_lon_prob(df, n_clusters, lon_value, tol=0.5, start_lat=70.0, start_lon=-140.0, browser=False, save_fig=False, fig_name='cross_section_prob_plot.png'):
+    """
+    Plots a cross-section of the dataset along a specified longitude, including the great-circle distance from a starting point, 
+    and visualizes the GMM cluster probabilities. This is point data and not a gridded field, so the plot is a scatter plot of 
+    points colored by their cluster probabilities.
+
+    Args:
+    - df (pd.DataFrame): The sampled dataset containing latitude, longitude, depth, and clustering probabilities.
+    - n_clusters (int): Number of clusters in the GMM model.
+    - lon_value (float): The longitude value for the cross-section slice (in degrees East).
+    - tol (float): Tolerance for selecting points around the specified longitude (in degrees). Default is 0.5.
+    - start_lat (float): Latitude of the starting point for distance calculation (in degrees North). Default is 70.0.
+    - start_lon (float): Longitude of the starting point for distance calculation (in degrees East). Default is -140.0.
+    - browser (bool): If True, the plot will be opened in a web browser, this saves memory when running in a notebook. Default is False.
+    - save_fig (bool): Whether to save the figure as a PNG file. Default is False.
+    - fig_name (str): Filename for saving the figure if save_fig is True. Default is 'cross_section_prob_plot.png'.
+
+    Returns:
+        - fig (matplotlib.figure.Figure): The matplotlib figure object containing the cross-section scatter plot with cluster 
+        probabilities, with the option of saving it as a PNG.
+    """
     # Antipodal longitude for the over-pole extension
     #lon_value = lon_value if lon_value <= 180 & lon_value >=0 else lon_value + 180
     if lon_value < 0 and lon_value >= -180:
         lon_value = lon_value + 180
 
     # Primary slice from start_lon and secondary for lon_value intersecting at the pole
-    df_primary = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
+    df_primary = df[
+        (df['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df['Longitude_[deg_E]'] <= start_lon + tol)
     ].copy()
 
-    df_antipodal = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+    df_antipodal = df[
+        (df['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df['Longitude_[deg_E]'] <= lon_value + tol)
     ].copy()
 
     df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
@@ -725,15 +897,12 @@ def cross_sec_lon_prob(df_sampled, n_clusters, lon_value, tol=0.5, start_lat=70.
 
     if browser:
         plt.show(renderer='browser')
+    elif save_fig:
+        plt.savefig(fig_name, dpi=300, bbox_inches='tight')
     else:
         plt.show()
 
-
-from scipy.interpolate import griddata
-from scipy.ndimage import gaussian_filter
-
-def cross_sec_lon_prob2(
-    df_sampled,
+def cross_sec_lon_prob2(df,
     n_clusters,
     lon_value,
     tol=0.5,
@@ -742,21 +911,46 @@ def cross_sec_lon_prob2(
     max_depth=850,
     depth_bin_size=10,
     dist_bin_size=2.2,
-    browser=False
-):
+    browser=False,
+    save_fig=False,
+    fig_name='cross_section_avg_prob_plot.png'):
+
+    """
+    Plots a cross-section of the dataset along a specified longitude, including the great-circle distance from a starting point, 
+    and visualizes the GMM cluster probabilities. This function bins the data in depth and distance, averages the probabilities within each bin
+    and then interpolates onto a regular grid for plotting. This code is inspired by Oglethorpe et al (2026).
+
+    Args:
+        - df (pd.Dataframe): The sampled dataset containing latitude, longitude, depth, and clustering probabilities.
+        - n_clusters (int): Number of clusters in the GMM model.
+        - lon_value (float): The longitude value for the cross-section slice (in degrees East).
+        - tol (float): Tolerance for selecting points around the specified longitude (in degrees). Default is 0.5.
+        - start_lat (float): Latitude of the starting point for distance calculation (in degrees North). Default is 70.0.
+        - start_lon (float): Longitude of the starting point for distance calculation (in degrees East). Default is -140.0.
+        - max_depth (float): Maximum depth to plot (in meters). Default is 850.
+        - depth_bin_size (float): Size of depth bins for averaging probabilities (in meters). Default is 10.
+        - dist_bin_size (float): Size of distance bins for averaging probabilities (in kilometers). Default is 2.2.
+        - browser (bool): If True, the plot will be opened in a web browser, this saves memory when running in a notebook. Default is False.
+        - save_fig (bool): Whether to save the figure as a PNG file. Default is False.
+        - fig_name (str): Filename for saving the figure if save_fig is True. Default is 'cross_section_avg_prob_plot.png'.
+
+    Returns:
+        - fig (matplotlib.figure.Figure): The matplotlib figure object containing the cross-section scatter plot with averaged cluster probabilities, 
+        with the option of saving it as a PNG.
+    """
     # Antipodal longitude for the over-pole extension
     if lon_value < 0 and lon_value >= -180:
         lon_value = lon_value + 180
         
     # Primary slice from start_lon and secondary for lon_value intersecting at the pole
-    df_primary = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
+    df_primary = df[
+        (df['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df['Longitude_[deg_E]'] <= start_lon + tol)
     ].copy()
 
-    df_antipodal = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+    df_antipodal = df[
+        (df['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df['Longitude_[deg_E]'] <= lon_value + tol)
     ].copy()
 
     df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
@@ -869,13 +1063,15 @@ def cross_sec_lon_prob2(
 
     if browser:
         plt.show(renderer='browser')
+    elif save_fig:
+        plt.savefig(fig_name, dpi=300, bbox_inches='tight')
     else:
         plt.show()
 
 
 def water_mass_fraction_plot_kate(
     df,
-    n_clusters,
+    n_WM,
     lon_value,
     tol=0.5,
     start_lat=70.0,
@@ -883,8 +1079,33 @@ def water_mass_fraction_plot_kate(
     max_depth=850,
     depth_bin_size=10,
     dist_bin_size=2.2,
-    browser=False
-):
+    browser=False,
+    save_fig=False,
+    fig_name='cross_section_water_mass_fraction_plot.png'):
+    """
+    Plots water mass fractions in a transsect accross the Arctic based on data from Ogelthorpe et al 2026 (must be downloaded). 
+    This code was inspired by their code to create similar transsect plots to their water mass fraction plots. 
+    Averages the water mass fractions in bins of depth and distance from a starting point, then interpolates onto a regular grid for plotting.
+    The Oglethorpe et al (2026) column names for each water mass fraction are hardcoded in this function, so this is not built for general use.
+
+    Args:
+        - df (pd.DataFrame): The sampled dataset containing latitude, longitude, depth, and water mass fractions.
+        - n_WM (int): Number of water masses
+        - lon_value (float): The longitude value for the cross-section slice (in degrees East).
+        - tol (float): Tolerance for selecting points around the specified longitude (in degrees). Default is 0.5.
+        - start_lat (float): Latitude of the starting point for distance calculation (in degrees North). Default is 70.0.
+        - start_lon (float): Longitude of the starting point for distance calculation (in degrees East). Default is -140.0.
+        - max_depth (float): Maximum depth to plot (in meters). Default is 850.
+        - depth_bin_size (float): Size of depth bins for averaging water mass fractions (in meters). Default is 10.
+        - dist_bin_size (float): Size of distance bins for averaging water mass fractions (in kilometers). Default is 2.2.
+        - browser (bool): If True, the plot will be opened in a web browser, this saves memory when running in a notebook. Default is False.
+        - save_fig (bool): Whether to save the figure as a PNG file. Default is False.
+        - fig_name (str): Filename for saving the figure if save_fig is True. Default is 'cross_section_water_mass_fraction_plot.png'.
+    
+    Returns:
+        - fig (matplotlib.figure.Figure): The matplotlib figure object containing the cross-section scatter plot with averaged water mass fractions, 
+        with the option of saving it as a PNG.
+    """
     # Antipodal longitude for the over-pole extension
     if lon_value < 0 and lon_value >= -180:
         lon_value = lon_value + 180
@@ -951,12 +1172,12 @@ def water_mass_fraction_plot_kate(
 
     # Figure
     fig = plt.figure(figsize=(12, 8))
-    gs = fig.add_gridspec(int(np.floor(n_clusters/2)), int(np.floor(n_clusters/2)), 
+    gs = fig.add_gridspec(int(np.floor(n_WM/2)), int(np.floor(n_WM/2)), 
                           width_ratios=[1, 1, 0.1], wspace=0.4, hspace=0.5)
 
     axes = []
-    for i in range(int(np.floor(n_clusters/2))):
-        for j in range(int(np.floor(n_clusters/3))):
+    for i in range(int(np.floor(n_WM/2))):
+        for j in range(int(np.floor(n_WM/3))):
             axes.append(fig.add_subplot(gs[i, j]))
     
     cax = fig.add_subplot(gs[:, 2])
@@ -1014,10 +1235,11 @@ def water_mass_fraction_plot_kate(
 
     if browser:
         plt.show(renderer='browser')
+    elif save_fig:
+        plt.savefig(fig_name, dpi=300, bbox_inches='tight')
     else:
         plt.show()
 
-import gsw
 def calc_pv(df):
     """
     Calculate potential vorticity (PV) for each profile in the dataframe.
@@ -1029,10 +1251,10 @@ def calc_pv(df):
         - g is the acceleration due to gravity  
     The function adds a new column 'Pv' to the dataframe with the calculated potential vorticity values.
     
-    Inputs:
+    Args:
     - df: pandas DataFrame containing the oceanographic profile data with columns for temperature, salinity, depth, and latitude.
     
-    Outputs:
+    Returns:
     - df: the input DataFrame with an additional column 'Pv' containing the calculated potential vorticity values.
     """
 
@@ -1079,11 +1301,11 @@ def calc_pv(df):
 
 def method34(df, seed=22, year_rng_0=[1980,2000], year_rng_1=[2000,2023], threshold_qtl_0=0.99, threshold_qtl_1=0.935):
     """
-    Sampling method 34: Bin data into polar stereographic projection grid, analyze bin occupancy distribution (Peisong's histogram method), 
+    Sampling method 34: Bin data into polar stereographic projection grid, analyze bin occupancy distribution (histogram method from Zheng (2023)), 
     and sample bins over the threshold. Sample also monthly distribution with cap on average bin size for uniformity.
     Returns the sampled dataframe.
 
-    Inputs:
+    Args:
     - df: pandas DataFrame containing the oceanographic profile data with columns for temperature, salinity, depth, latitude, longitude, and date.
     - seed: random seed for reproducibility
     - year_rng_0: list with start and end year for the first time period (e.g., [1980, 2000])
@@ -1091,7 +1313,7 @@ def method34(df, seed=22, year_rng_0=[1980,2000], year_rng_1=[2000,2023], thresh
     - threshold_qtl_0: quantile threshold for bin occupancy in the first time period (e.g., 0.99)
     - threshold_qtl_1: quantile threshold for bin occupancy in the second time period (e.g., 0.935)
 
-    Outputs:
+    Returns:
     - df_sampled: pandas DataFrame containing the sampled oceanographic profile data after applying the binning and thresholding method.
     """
 
@@ -1115,9 +1337,22 @@ def method34(df, seed=22, year_rng_0=[1980,2000], year_rng_1=[2000,2023], thresh
 
     return df_sampled
 
-from matplotlib.ticker import ScalarFormatter
+def feature_histograms(df, feat_col='Conservative_Temperature_[deg_C]', label_col='gmm_label_6', feature='Temperature [°C]', x_min=None, x_max=None, save_fig=False, fig_name='feature_histograms.png'):
+    """
+    Plots histograms of a specified feature for each GMM cluster in the dataframe.
+    
+    Args:
+        - df (pd.DataFrame): The dataframe containing the data.
+        - feat_col (str): The column name of the feature to plot. Default is 'Conservative_Temperature_[deg_C]'.
+        - label_col (str): The column name of the GMM cluster labels. Default is 'gmm_label_6'.
+        - feature (str): The label for the x-axis of the plot. Default is 'Temperature [°C]'.
+        - x_min (float): Minimum value for the x-axis. If None, it will be set to the minimum of the feature column.
+        - x_max (float): Maximum value for the x-axis. If None, it will be set to the maximum of the feature column.
 
-def feature_histograms(df, feat_col='Conservative_Temperature_[deg_C]', label_col='gmm_label_6', feature='Temperature [°C]', x_min=None, x_max=None):
+    Returns:
+        - fig (matplotlib.figure.Figure): The matplotlib figure object containing the histograms for each GMM cluster, with the option of saving it as a PNG.
+        
+    """
     n_clusters = df[label_col].nunique()
     colors = plt.cm.viridis_r(np.linspace(0, 1, n_clusters))
 
@@ -1143,51 +1378,26 @@ def feature_histograms(df, feat_col='Conservative_Temperature_[deg_C]', label_co
         x_max = df[feat_col].max()
     axes[0].set_xlim(x_min, x_max)
 
+    if save_fig:
+        plt.savefig(fig_name, dpi=300, bbox_inches='tight')
+
     plt.tight_layout()
     plt.show()
-    
-    """
-    Autocorrelation Matrix Between DataFrame Features
-    ===================================================
-    Computes the lag-k autocorrelation for each numeric column in a pandas
-    DataFrame, then visualises the result as a heatmap.
-
-    Note on terminology
-    -------------------
-    "Autocorrelation matrix" can mean two things depending on context:
-
-    (A) Cross-correlation / Pearson correlation matrix  ← df.corr()
-        Measures linear association *between different columns* at lag-0.
-
-    (B) Per-feature autocorrelation matrix              ← this file
-        For each numeric column, computes its autocorrelation at lags
-        0, 1, 2, …, max_lag.  The result is a (n_features × n_lags) matrix.
-
-    This script implements (B), which is the standard meaning in time-series
-    analysis. If you want (A) instead, see the one-liner at the bottom.
-    """
-
-import seaborn as sns
-from matplotlib.colors import TwoSlopeNorm
-
-
-# ── 1. Core function ─────────────────────────────────────────────────────────
 
 def autocorrelation_matrix(df: pd.DataFrame, max_lag: int = 20) -> pd.DataFrame:
     """
-    Compute the autocorrelation of every numeric column at lags 0…max_lag.
+    Computes the lag-k autocorrelation for each numeric column at lags 0…max_lag in a pandas
+    DataFrame.
 
-    Parameters
-    ----------
-    df       : DataFrame whose numeric columns will be analysed.
-    max_lag  : Maximum lag to compute (inclusive).
+    Args:
+        - df (pd.Dataframe): DataFrame whose numeric columns will be analysed.
+        - max_lag (int): Maximum lag to compute (inclusive). Defaults to 20.
 
-    Returns
-    -------
-    acf_df : DataFrame of shape (n_numeric_features, max_lag+1).
-             Index   = column names from df.
-             Columns = lag values [0, 1, 2, …, max_lag].
-             Values  = Pearson autocorrelation at that lag (always 1.0 at lag-0).
+    Returns:
+        - acf_df : DataFrame of shape (n_numeric_features, max_lag+1).
+                Index   = column names from df.
+                Columns = lag values [0, 1, 2, …, max_lag].
+                Values  = Pearson autocorrelation at that lag (always 1.0 at lag-0).
     """
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     if not numeric_cols:
@@ -1204,9 +1414,6 @@ def autocorrelation_matrix(df: pd.DataFrame, max_lag: int = 20) -> pd.DataFrame:
     acf_df.columns.name = "lag"
     return acf_df
 
-
-# ── 2. Plotting function ──────────────────────────────────────────────────────
-
 def plot_autocorrelation_matrix(
     acf_df: pd.DataFrame,
     title: str = "Autocorrelation Matrix",
@@ -1216,20 +1423,18 @@ def plot_autocorrelation_matrix(
     fmt: str = ".2f",
 ) -> plt.Figure:
     """
-    Visualise the autocorrelation matrix as a heatmap.
+    Auxiliary function to autocorrelation_matrix. Plots the autocorrelation matrix as a heatmap.
 
-    Parameters
-    ----------
-    acf_df   : Output of autocorrelation_matrix().
-    title    : Plot title.
-    figsize  : (width, height) in inches.
-    cmap     : Matplotlib colormap name.
-    annot    : Whether to annotate cells with numeric values.
-    fmt      : Format string for annotations.
+    Args:
+    - acf_df (pd.DataFrame): Output of autocorrelation_matrix().
+    - title (str): Plot title.
+    - figsize (tuple): (width, height) in inches.
+    - cmap (str): Matplotlib colormap name.
+    - annot (bool): Whether to annotate cells with numeric values.
+    - fmt (str): Format string for annotations.
 
-    Returns
-    -------
-    fig : Matplotlib Figure object.
+    Returns:
+        - fig : Matplotlib Figure object.
     """
     fig, ax = plt.subplots(figsize=figsize)
 
@@ -1257,60 +1462,8 @@ def plot_autocorrelation_matrix(
     plt.tight_layout()
     return fig
 
-
-# ── 3. Demo ───────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    # --- Synthetic time-series data ---
-    np.random.seed(42)
-    n = 200
-
-    t = np.linspace(0, 4 * np.pi, n)
-    df_demo = pd.DataFrame({
-        "AR(1) ρ=0.9": pd.Series(
-            [0.0] + [None] * (n - 1), dtype=float
-        ),  # filled below
-        "White noise":  np.random.randn(n),
-        "Sine wave":    np.sin(t) + 0.2 * np.random.randn(n),
-        "Random walk":  np.cumsum(np.random.randn(n)),
-    })
-
-    # Build AR(1) series manually
-    ar = [0.0]
-    for _ in range(n - 1):
-        ar.append(0.9 * ar[-1] + np.random.randn())
-    df_demo["AR(1) ρ=0.9"] = ar
-
-    # Compute autocorrelation matrix
-    acf = autocorrelation_matrix(df_demo, max_lag=30)
-    print("Autocorrelation matrix (first 5 lags):")
-    print(acf.iloc[:, :6].to_string())
-    print()
-
-    # Plot
-    fig = plot_autocorrelation_matrix(
-        acf,
-        title="Autocorrelation Matrix — Demo Signals",
-        figsize=(16, 5),
-        annot=False,        # turn on for small matrices; noisy for 30 lags
-    )
-    out_path = "autocorrelation_matrix_demo.png"
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    print(f"Plot saved → {out_path}")
-
-    # ── (A) Cross-correlation / Pearson matrix ────────────────────────────────
-    # If you actually want correlation *between* features (not within each
-    # feature over time), pandas gives you this in one line:
-    pearson_corr = df_demo.corr()          # lag-0 cross-correlation
-    print("\nPearson (cross-)correlation matrix:")
-    print(pearson_corr.to_string())
-
-import numpy as np
-import matplotlib.pyplot as plt
-
-
 def cross_sec_lon_prob3(
-    df_sampled,
+    df,
     n_clusters,
     lon_value,
     tol=0.5,
@@ -1318,12 +1471,26 @@ def cross_sec_lon_prob3(
     start_lon=-140.0,
     max_depth=850,
     point_size=8,
-    browser=False
-):
+    browser=False,
+    save_fig=False,
+    fig_name='cross_section_prob_plot_raw_points.png'):
     """
-    Same as cross_sec_lon_prob2, but plots each sample point directly
-    (as a scatter point colored by its own probability value) instead
-    of binning + averaging + interpolating onto a grid.
+    Plots the point cloud of GMM cluster probabilities along a cross-section through the North Pole, colored by probability values, without binning points.
+    
+    Args:
+        - df (pd.DataFrame): The sampled dataset containing latitude, longitude, depth, and clustering probabilities.
+        - n_clusters (int): Number of clusters in the GMM model.
+        - lon_value (float): The longitude value for the cross-section slice (in degrees East).
+        - tol (float): Tolerance for selecting points around the specified longitude (in degrees). Default is 0.5.
+        - start_lat (float): Latitude of the starting point for distance calculation (in degrees North). Default is 70.0.
+        - start_lon (float): Longitude of the starting point for distance calculation (in degrees East). Default is -140.0.
+        - max_depth (float): Maximum depth to plot (in meters). Default is 850.
+        - point_size (int): Size of the scatter plot points. Default is 8.
+        - browser (bool): If True, the plot will be opened in a web browser, this saves memory when running in a notebook. Default is False.
+    
+    Returns:
+        - fig (matplotlib.figure.Figure): The matplotlib figure object containing the cross-section scatter plot with raw GMM cluster probabilities, 
+        with the option of displaying it in a browser or saving it as a PNG.
     """
 
     # Antipodal longitude for the over-pole extension
@@ -1331,14 +1498,14 @@ def cross_sec_lon_prob3(
         lon_value = lon_value + 180
 
     # Primary slice from start_lon and secondary for lon_value intersecting at the pole
-    df_primary = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
+    df_primary = df[
+        (df['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df['Longitude_[deg_E]'] <= start_lon + tol)
     ].copy()
 
-    df_antipodal = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+    df_antipodal = df[
+        (df['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df['Longitude_[deg_E]'] <= lon_value + tol)
     ].copy()
 
     df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
@@ -1410,12 +1577,14 @@ def cross_sec_lon_prob3(
 
     if browser:
         plt.show(renderer='browser')
+    elif save_fig:
+        plt.savefig(fig_name, dpi=300, bbox_inches='tight')
     else:
         plt.show()
 
 
 def cross_sec_lon_var(
-    df_sampled,
+    df,
     n_clusters,
     lon_value,
     tol=0.5,
@@ -1424,21 +1593,45 @@ def cross_sec_lon_var(
     max_depth=850,
     depth_bin_size=10,
     dist_bin_size=2.2,
-    browser=False
-):
+    browser=False,
+    save_fig=False,
+    fig_name='cross_section_var_plot.png'):
+    """
+    Plots the variance per point accross ensemble members, binned in the same way as function cross_sec_lon_prob2. 
+    Also uses the same transsect plotting method.
+
+    Args:
+        - df (pd.DataFrame): The sampled dataset containing latitude, longitude, depth, and clustering variance.
+        - n_clusters (int): Number of clusters in the GMM model.
+        - lon_value (float): The longitude value for the cross-section slice (in degrees East).
+        - tol (float): Tolerance for selecting points around the specified longitude (in degrees). Default is 0.5.
+        - start_lat (float): Latitude of the starting point for distance calculation (in degrees North). Default is 70.0.
+        - start_lon (float): Longitude of the starting point for distance calculation (in degrees East). Default is -140.0.
+        - max_depth (float): Maximum depth to plot (in meters). Default is 850.
+        - depth_bin_size (float): Size of depth bins for averaging variances (in meters). Default is 10.
+        - dist_bin_size (float): Size of distance bins for averaging variances (in kilometers). Default is 2.2.
+        - browser (bool): If True, the plot will be opened in a web browser, this saves memory when running in a notebook. Default is False.
+        - save_fig (bool): Whether to save the figure as a PNG file. Default is False.
+        - fig_name (str): Filename for saving the figure if save_fig is True. Default is 'cross_section_var_plot.png'.
+
+    Returns:
+        - fig (matplotlib.figure.Figure): The matplotlib figure object containing the cross-section scatter plot with averaged cluster variances, 
+        with the option of saving as a PNG.
+    
+    """
     # Antipodal longitude for the over-pole extension
     if lon_value < 0 and lon_value >= -180:
         lon_value = lon_value + 180
         
     # Primary slice from start_lon and secondary for lon_value intersecting at the pole
-    df_primary = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= start_lon - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= start_lon + tol)
+    df_primary = df[
+        (df['Longitude_[deg_E]'] >= start_lon - tol) &
+        (df['Longitude_[deg_E]'] <= start_lon + tol)
     ].copy()
 
-    df_antipodal = df_sampled[
-        (df_sampled['Longitude_[deg_E]'] >= lon_value - tol) &
-        (df_sampled['Longitude_[deg_E]'] <= lon_value + tol)
+    df_antipodal = df[
+        (df['Longitude_[deg_E]'] >= lon_value - tol) &
+        (df['Longitude_[deg_E]'] <= lon_value + tol)
     ].copy()
 
     df_lon_slice = pd.concat([df_primary, df_antipodal], ignore_index=True)
@@ -1551,6 +1744,8 @@ def cross_sec_lon_var(
 
     if browser:
         plt.show(renderer='browser')
+    elif save_fig:
+        plt.savefig(fig_name, dpi=300, bbox_inches='tight')
     else:
         plt.show()
 
@@ -1563,12 +1758,31 @@ def cross_sec_lon_var2(
     start_lon=-140.0,
     max_depth=850,
     point_size=8,
-    browser=False
-):
+    browser=False,
+    save_fig=False,
+    fig_name='cross_section_var_plot_raw_points.png'):
     """
-    Same as cross_sec_lon_prob2, but plots each sample point directly
-    (as a scatter point colored by its own probability value) instead
-    of binning + averaging + interpolating onto a grid.
+    Similar to the cross_sec_lon_var function, but instead of binning and averaging the variance values, this function plots each sample point 
+    directly as a scatter point colored by its own variance value. This allows for a more detailed view of the variance distribution across the 
+    cross-section without any smoothing or interpolation.
+
+    Args:
+        - df_sampled (pd.DataFrame): The sampled dataset containing latitude, longitude, depth, and clustering variance.
+        - n_clusters (int): Number of clusters in the GMM model.
+        - lon_value (float): The longitude value for the cross-section slice (in degrees East).
+        - tol (float): Tolerance for selecting points around the specified longitude (in degrees). Default is 0.5.
+        - start_lat (float): Latitude of the starting point for distance calculation (in degrees North). Default is 70.0.
+        - start_lon (float): Longitude of the starting point for distance calculation (in degrees East). Default is -140.0.
+        - max_depth (float): Maximum depth to plot (in meters). Default is 850.
+        - point_size (int): Size of the scatter plot points. Default is 8.
+        - browser (bool): If True, the plot will be opened in a web browser, this saves memory when running in a notebook. Default is False.
+        - save_fig (bool): Whether to save the figure as a PNG file. Default is False.
+        - fig_name (str): Filename for saving the figure if save_fig is True. Default is 'cross_section_var_plot.png'.
+    
+    Returns:
+        - fig (matplotlib.figure.Figure): The matplotlib figure object containing the cross-section scatter plot with raw cluster variances,
+        with the option of displaying it in a browser or saving it as a PNG.
+    
     """
 
     # Antipodal longitude for the over-pole extension
@@ -1651,5 +1865,7 @@ def cross_sec_lon_var2(
 
     if browser:
         plt.show(renderer='browser')
+    elif save_fig:
+        plt.savefig(fig_name, dpi=300, bbox_inches='tight')
     else:
         plt.show()
