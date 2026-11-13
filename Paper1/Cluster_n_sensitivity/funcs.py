@@ -1240,7 +1240,7 @@ def water_mass_fraction_plot_kate(
     else:
         plt.show()
 
-def calc_pv(df):
+def calc_PV_basic(df):
     """
     Calculate potential vorticity (PV) for each profile in the dataframe.
     PV is calculated using the formula:
@@ -1299,6 +1299,130 @@ def calc_pv(df):
     df.dropna(subset=['Pv'], inplace=True)
     return df
 
+def normalize(arr, range_min, range_max):
+    """
+    Auxiliary function for calc_PV_e_fit to normalize an array to a specified range [range_min, range_max].
+    
+    Args:
+        - arr: numpy array of values to be normalized.
+        - range_min: minimum value of the desired range.
+        - range_max: maximum value of the desired range.
+
+    Returns:
+        - norm_arr: numpy array of normalized values within the specified range.
+    """
+    norm_arr = []
+    diff = range_max - range_min
+    diff_arr = max(arr) - min(arr)
+    for i in arr:
+        if diff_arr == 0:
+            norm_arr.append(np.nan)  # Handle division by zero
+        else:
+            temp = (((i - min(arr)) * diff) / diff_arr) + range_min
+            norm_arr.append(temp)
+    return np.array(norm_arr)
+
+def calculate_h_and_PV_from_rho(profile):
+    """
+    Auxiliary function for calc_PV_e_fit. This function calculates the density layer thickness (h_d) and potential vorticity (PV) for a given oceanographic profile, 
+    using a rolling window exponential fit method. The function first removes the mixed layer from the profile,
+    normalizes the potential density. Original code given by the authors of Oglethorpe et al (2026), modified by 
+    the repo author.
+    
+    Args:
+        - profile: pandas DataFrame containing the oceanographic profile data with columns for potential density (sigma0), depth, and latitude.
+    
+    Returns:
+        - profile: the input DataFrame with two additional columns 'h_d' and 'PV' containing the calculated density layer thickness and potential vorticity values.
+    """
+
+    # Remove mixed layer
+    # Check the profile starts shallower than 10m
+    if profile['Depth_[m]'].iloc[0]< 10:
+        # Find the surface density
+        surface_density = profile['sigma0'].iloc[0]
+        # Find the maximum depth at which potential density is within 0.1kg/m3 of surface density
+        mld = profile.loc[(profile['sigma0'] <= surface_density + 0.1), 'Depth_[m]'].max()
+        # Remove depths in profile shallower than the mixed layer depth
+        profile = profile[profile['Depth_[m]'] >= mld]
+
+    # Check if the difference in sigma0 is zero
+    if np.diff(profile['sigma0']).any() == 0:
+        return None  # Return None to indicate skipping this nprof
+
+    # Normalize profile
+    rho_norm = normalize(profile['sigma0'], 10, 100)
+    
+    # Calculate density layer thickness
+    rho_0 = np.nanmin(rho_norm)
+    rholog = np.log(rho_norm / rho_0)
+    profile['h_d'] = profile['Depth_[m]'] / rholog
+    
+    # Calculate Coriolis parameter
+    profile['f'] = gsw.f(profile['Latitude_[deg_N]'])
+    
+    # Calculate Potential Vorticity
+    profile['PV'] = profile['f'] / profile['h_d']
+
+    return profile
+
+def compute_gradient(group):
+    """
+    Auxiliary function for calc_PV_e_fit. This function computes the gradient of potential vorticity (PV) with respect to depth for a given group of oceanographic profile data.
+    
+    Args:
+        - group (pd.Dataframe): pandas DataFrame containing the oceanographic profile data for a specific group (e.g., a specific profile), with columns for depth and potential vorticity (PV).
+        
+    Returns:
+        - gradient_PV: pandas Series containing the computed gradient of PV with respect to depth for the given group.
+    """
+    delta_depth = group['Depth_[m]'].diff()  # Compute difference in depth between adjacent rows
+    delta_PV = group['PV'].diff()  # Compute difference in PV between adjacent rows
+    gradient_PV = delta_PV / delta_depth  # Compute gradient as change in PV divided by change in depth
+
+    # Handle boundary conditions within each group
+    gradient_PV.iloc[0] = (group['PV'].iloc[1] - group['PV'].iloc[0]) / (group['Depth_[m]'].iloc[1] - group['Depth_[m]'].iloc[0])
+    gradient_PV.iloc[-1] = (group['PV'].iloc[-1] - group['PV'].iloc[-2]) / (group['Depth_[m]'].iloc[-1] - group['Depth_[m]'].iloc[-2])
+
+    return gradient_PV
+
+def calc_PV(df, S_col='Absolute_Salinity_[PSU]', T_col='Conservative_Temperature_[deg_C]', lat_col='Latitude_[deg_N]', depth_col='Depth_[m]'):
+    """
+    Calculate Potential Vorticity (PV) using a rolling exponential fit to profiles of potential density (sigma0) and depth. 
+    This function first calculates the potential density from salinity and temperature, 
+    then applies the calculate_h_and_PV_from_rho function to each profile to compute the density layer thickness and PV. 
+    Finally, it computes the gradient of PV with respect to depth for each profile.
+    
+    Args:
+        - df: pandas DataFrame containing the oceanographic profile data with columns for temperature, salinity, depth, and latitude.
+    
+    Returns:
+        - df: the input DataFrame with two additional columns 'PV' and 'dPVdz containing the calculated potential vorticity values and their gradients.
+    """
+    df['sigma0'] = gsw.sigma0(df[S_col],df[T_col])
+
+    # Apply the function to each 'nprof' of each 'source'
+    df = df.groupby(['Source','Profile_Number']).apply(calculate_h_and_PV_from_rho)
+    df = df.drop(['Source','Profile_Number'], axis=1)
+    df.reset_index(inplace=True)
+
+    # Drop sigma0, h_d and f columns
+    df.drop(columns=['sigma0','h_d','f'], inplace=True)
+
+    # Group the DataFrame by profile
+    grouped = df.groupby(['Source', 'Profile_Number'])
+
+    # Compute the gradient of PV with respect to depth for each profile
+    gradients = grouped.apply(compute_gradient)
+    gradients = gradients.reset_index()
+    gradients = gradients.rename(columns={0: 'gradient_PV'})
+    df['dPVdz'] = gradients['gradient_PV']
+
+    # Replace infinite values with NaN
+    df['dPVdz'].replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    return df
+    
 def method34(df, seed=22, year_rng_0=[1980,2000], year_rng_1=[2000,2023], threshold_qtl_0=0.99, threshold_qtl_1=0.935):
     """
     Sampling method 34: Bin data into polar stereographic projection grid, analyze bin occupancy distribution (histogram method from Zheng (2023)), 
