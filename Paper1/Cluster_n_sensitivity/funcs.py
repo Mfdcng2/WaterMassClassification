@@ -15,6 +15,11 @@ import gsw
 from matplotlib.ticker import ScalarFormatter
 import seaborn as sns
 from matplotlib.colors import TwoSlopeNorm
+import tempfile, os
+from joblib import Parallel, delayed, cpu_count
+import tqdm
+from sklearn.mixture import GaussianMixture
+import random
 
 # Sample bins of bins (geographical and depth bins) in projection space
 def sample_bins_of_bins_proj(df, n_x_bins=100, n_y_bins=100, n_depth_bins=5, projection='npstere', min_flag=True):
@@ -1993,3 +1998,163 @@ def cross_sec_lon_var2(
         plt.savefig(fig_name, dpi=300, bbox_inches='tight')
     else:
         plt.show()
+
+def fit_member(seed, n_clusters, X):
+    """
+    Auxiliary function for gmm_ensemble. Fits a Gaussian Mixture Model (GMM) to the input data X 
+    using a specified random seed and number of clusters.
+
+    Args:
+        - seed (int): Random seed for reproducibility.
+        - n_clusters (int): Number of clusters for the GMM.
+        - X (np.ndarray): Input data array to fit the GMM.
+    
+    Returns:
+        - gmm (GaussianMixture): The fitted GMM object.
+        - labels (np.ndarray): Predicted cluster labels for the input data X, as int8.
+    """
+    gmm = GaussianMixture(
+        n_components=n_clusters,   # number of clusters
+        covariance_type='full',    # full cov matrix has more flexibility
+        random_state=seed,
+    )
+    gmm.fit(X)
+    return gmm, gmm.predict(X).astype(np.int8)
+
+def gmm_ensemble(df, n_clusters, features, ensemble_size=100, random_state=None):
+    """
+    This is the main function of the project. Parallely, for each random seed initialisation, 
+    this function fits a GMM to the data given as a pandas DataFrame. An ensemble_size GMMs are fitted, 
+    and the resulting cluster labels and probabilities are stored in the DataFrame. Each worker also predicts 
+    labels on the full data and returns them as int8 (K <= 127), keeping the transfer back small.
+    
+    Args:
+        - df (pd.DataFrame): The input DataFrame containing the data to be clustered (should go through method_34 before input here).
+        - n_clusters (int): The number of clusters for the GMM.
+        - features (list of str): List of column names in the DataFrame to be used as input features for clustering.
+        - ensemble_size (int): The number of GMMs to fit in the ensemble. Default is 100.
+        - random_state (int or None): Random seed for reproducibility. Default is None.
+        
+    Returns:
+        - gmms (list of GaussianMixture): List of fitted GMM objects for each ensemble member.
+        - labels (list of np.ndarray): List of predicted cluster labels for each ensemble member, as int8 arrays.
+    """
+
+    # create list of seeds
+    seeds = random.sample(range(1, 10000), ensemble_size)
+
+    X = df[features].to_numpy()
+    tmp = tempfile.mktemp(suffix='.npy')
+    np.save(tmp, X)
+    X_memmap = np.load(tmp, mmap_mode='r')
+    del X  # free the in-memory copy
+
+    print(f"Fitting {len(seeds)} ensemble members on full data {X_memmap.shape} at K={n_clusters}")
+    print(f"CPU cores available: {cpu_count()}")
+
+    try:
+        fitted = Parallel(n_jobs=-1, backend="loky")(
+            delayed(fit_member)(seed, n_clusters, X_memmap)
+            for seed in tqdm.tqdm(seeds, desc="Fitting members", unit="member")
+        )
+    finally:
+        os.remove(tmp)  # always clean up temp file
+
+    # A list of fitted GMMs and per-member labels.
+    gmms   = [g for g, _ in fitted]
+    labels = [lab for _, lab in fitted]
+
+    print(f"Done. {len(gmms)} members fitted at K={n_clusters}.")
+
+    return gmms, labels
+
+def match_labels(df, gmms, labels, ensemble_size, n_clusters):
+    """
+    Auxiliary function for gmm_ensemble. This function matches the labels of each ensemble member to a reference member (the first one) 
+    using the Hungarian algorithm. It returns a DataFrame containing the matched labels for each ensemble member.
+
+    Args:
+        - df (pd.DataFrame): The input DataFrame containing the data to be clustered 
+        (that has now been clustered but needs postprocessing to add label columns).
+        - gmms (list): List of fitted GMM objects for each ensemble member.
+        - labels (list): List of predicted cluster labels for each ensemble member.
+        - ensemble_size (int): The number of GMMs in the ensemble.
+        - n_clusters (int): The number of clusters for the GMM.
+
+    Returns:
+        - df (pd.DataFrame): The input DataFrame with additional columns for matched labels of each ensemble member,
+    """
+    # Clusters with similar mean T, S and D (depth) should be matched across different seeds
+    cluster_means = []
+    for i in range(ensemble_size):
+        means = gmms[i].means_
+        cluster_means.append(means)
+
+    # Match clusters across different seeds based on closest mean T, S and D (depth)
+    matched_labels = []
+    for i in range(ensemble_size):
+        means = cluster_means[i]
+        matched = np.zeros(n_clusters, dtype=int)
+        for j in range(n_clusters):
+            mean_T = means[j, 0]
+            mean_S = means[j, 1]
+            min_dist = np.inf
+            match = -1
+            for k in range(n_clusters):
+                dist = np.sqrt((mean_T - cluster_means[0][k, 0])**2 + (mean_S - cluster_means[0][k, 1])**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    match = k
+            matched[j] = match
+        matched_labels.append(matched)
+
+    for i in range(ensemble_size):
+        df['gmm_label_'+str(i)] = matched_labels[i][labels[i]]
+    
+    return df, matched_labels
+
+def gmm_probs(df, gmms, ensemble_size, n_clusters, matched_labels, features):
+    """
+    Auxiliary function for gmm_ensemble. This function computes the probabilities of each data point belonging to each cluster 
+    for each ensemble member and adds these probabilities as new columns in the DataFrame.
+
+    Args:
+        - df (pd.DataFrame): The input DataFrame containing the data to be clustered.
+        - gmms (list): List of fitted GMM objects for each ensemble member.
+        - ensemble_size (int): The number of GMMs in the ensemble.
+        - n_clusters (int): The number of clusters for the GMM.
+
+    Returns:
+        - df (pd.DataFrame): The input DataFrame with additional columns for probabilities of each data point belonging to each cluster 
+        for each ensemble member.
+    """
+    # Feature matrix
+    X_feat = df[features].to_numpy()
+
+
+    def _gmm_proba(gmm, matched, X, n_clusters):
+        """Return predict_proba aligned to reference clusters: (n_samples, n_clusters)."""
+        proba = gmm.predict_proba(X)
+        aligned = np.zeros_like(proba)
+        for j in range(n_clusters):
+            aligned[:, matched[j]] += proba[:, j]  # place member cluster j into its reference column
+        return aligned
+
+
+    proba_sum = np.zeros((len(df), n_clusters))
+    batch_size = 4  # tune this
+
+    batches = [range(ensemble_size)[i:i + batch_size]
+            for i in range(0, ensemble_size, batch_size)]
+
+    for batch in tqdm.tqdm(batches, desc="GMM batches", unit="batch"):
+        batch_results = Parallel(n_jobs=len(batch), backend="loky")(
+            delayed(_gmm_proba)(gmms[i], matched_labels[i], X_feat, n_clusters)
+            for i in batch
+        )
+        proba_sum += np.sum(batch_results, axis=0)
+
+    proba_mean = proba_sum / ensemble_size  # (n_samples, n_clusters), rows sum to 1
+
+    for j in tqdm.tqdm(range(n_clusters), desc="Writing clusters", unit="cluster"):
+        df_copy[f'prob_mean_cluster_{j}'] = proba_mean[:, j]
