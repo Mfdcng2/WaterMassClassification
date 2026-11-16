@@ -2157,4 +2157,4 @@ def gmm_probs(df, gmms, ensemble_size, n_clusters, matched_labels, features):
     proba_mean = proba_sum / ensemble_size  # (n_samples, n_clusters), rows sum to 1
 
     for j in tqdm.tqdm(range(n_clusters), desc="Writing clusters", unit="cluster"):
-        df_copy[f'prob_mean_cluster_{j}'] = proba_mean[:, j]
+        df[f'prob_mean_cluster_{j}'] = proba_mean[:, j]
