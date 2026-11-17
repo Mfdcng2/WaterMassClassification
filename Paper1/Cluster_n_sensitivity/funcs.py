@@ -20,6 +20,9 @@ from joblib import Parallel, delayed, cpu_count
 import tqdm
 from sklearn.mixture import GaussianMixture
 import random
+from pyproj import Transformer
+
+    
 
 # Sample bins of bins (geographical and depth bins) in projection space
 def sample_bins_of_bins_proj(df, n_x_bins=100, n_y_bins=100, n_depth_bins=5, projection='npstere', min_flag=True):
@@ -2142,7 +2145,7 @@ def gmm_probs(df, gmms, ensemble_size, n_clusters, matched_labels, features):
 
 
     proba_sum = np.zeros((len(df), n_clusters))
-    batch_size = 4  # tune this
+    batch_size = 4 
 
     batches = [range(ensemble_size)[i:i + batch_size]
             for i in range(0, ensemble_size, batch_size)]
@@ -2158,3 +2161,346 @@ def gmm_probs(df, gmms, ensemble_size, n_clusters, matched_labels, features):
 
     for j in tqdm.tqdm(range(n_clusters), desc="Writing clusters", unit="cluster"):
         df[f'prob_mean_cluster_{j}'] = proba_mean[:, j]
+
+    return df
+
+def gmm_vars(df, gmms, ensemble_size, n_clusters, matched_labels, features):
+    """
+    Auxiliary function for gmm_ensemble. This function computes the variance of the probabilities of each data point belonging to each cluster 
+    across all ensemble members and adds these variances as new columns in the DataFrame.
+
+    Args:
+        - df (pd.DataFrame): The input DataFrame containing the data to be clustered.
+        - gmms (list): List of fitted GMM objects for each ensemble member.
+        - ensemble_size (int): The number of GMMs in the ensemble.
+        - n_clusters (int): The number of clusters for the GMM.
+
+    Returns:
+        - df (pd.DataFrame): The input DataFrame with additional columns for variances of probabilities of each data point belonging to each cluster 
+        across all ensemble members.
+    """
+    def _gmm_proba_aligned(gmm, matched, X, n_clusters):
+        """predict_proba for one member, columns realigned to reference clusters."""
+        proba = gmm.predict_proba(X)
+        aligned = np.zeros_like(proba)
+        for j in range(n_clusters):
+            aligned[:, matched[j]] += proba[:, j]
+        return aligned
+    
+    def cluster_probability_variance(gmms, matched_labels, df, features,
+                                    n_clusters, ensemble_size,
+                                    batch_size=4, ddof=0):
+        """
+        Variance of cluster membership across ensemble members.
+
+        For each sample s and reference cluster k, computes the variance over the
+        `ensemble_size` members of P_i[s, k] (member i's probability that s belongs
+        to k, after aligning each member to the common reference set via
+        matched_labels).
+
+        Streams sum & sum-of-squares -> memory is O(n_samples * n_clusters),
+        independent of ensemble size.
+
+        Returns
+        -------
+        var_per_sample  : (n_samples, n_clusters) across-member variance
+        var_per_cluster : (n_clusters,) mean over samples -> one number per cluster
+        """
+        X = df[features].to_numpy()
+        n = len(X)
+        s1 = np.zeros((n, n_clusters))   # running sum of P
+        s2 = np.zeros((n, n_clusters))   # running sum of P^2
+
+        batches = [range(ensemble_size)[i:i + batch_size]
+                for i in range(0, ensemble_size, batch_size)]
+
+        for batch in tqdm.tqdm(batches, desc="GMM batches", unit="batch"):
+            res = Parallel(n_jobs=len(batch), backend="loky")(
+                delayed(_gmm_proba_aligned)(gmms[i], matched_labels[i], X, n_clusters)
+                for i in batch
+            )
+            arr = np.asarray(res)            # (len(batch), n, n_clusters)
+            s1 += arr.sum(axis=0)
+            s2 += (arr ** 2).sum(axis=0)
+
+        mean = s1 / ensemble_size
+        var_per_sample = s2 / ensemble_size - mean ** 2      # population variance
+        if ddof:
+            var_per_sample *= ensemble_size / (ensemble_size - ddof)
+        np.clip(var_per_sample, 0, None, out=var_per_sample)  # guard fp round-off
+        var_per_cluster = var_per_sample.mean(axis=0)
+        return var_per_sample, var_per_cluster
+
+    return cluster_probability_variance(gmms, matched_labels, df, features, n_clusters, ensemble_size)
+
+def fit_gmm_seed(seed, n_components_range, subsample_size, X):
+    """Auxiliary function for cluster_number_finder function.
+    Fits GMMs for all component counts on one seed's subsample.
+    The subsample is drawn (and read out of the memmap) once per seed and
+    reused for every component count.
+
+    Args:
+        - seed (int): Random seed for reproducibility.
+        - n_components_range (iterable): Range of component counts to evaluate.
+        - subsample_size (int): Number of samples to draw from X for fitting.
+        - X (np.ndarray): Input data array to fit the GMM.
+
+    Returns:
+        - bics (list): List of Bayesian Information Criterion (BIC) values for each component count.
+    """
+    rng = np.random.default_rng(seed)
+    size = min(subsample_size, len(X))
+    idx = np.sort(rng.choice(len(X), size=size, replace=False))  # sorted -> sequential memmap reads
+    X_sub = np.asarray(X[idx])  # materialize the subsample once
+
+    bics, aics = [], []
+    for n in n_components_range:
+        gmm = GaussianMixture(
+            n_components=n,
+            covariance_type='full',
+            random_state=seed,
+            max_iter=10_000,
+            n_init=1,
+        )
+        gmm.fit(X_sub)
+        bics.append(gmm.bic(X_sub))
+        aics.append(gmm.aic(X_sub))
+    return bics, aics
+
+def cluster_number_finder(df,n_cluster_range,ensemble_size, seeds, sample_size=500_000):
+    """
+    This function computes the Bayesian Information Criterion (BIC) for a range 
+    of cluster numbers and plots the BIC values to help determine the optimal 
+    number of clusters for GMM clustering.
+    
+    Args:
+        - df (pd.DataFrame): The input DataFrame containing the data to be clustered with only 
+            the feature columns for input in the GMM.
+        - n_cluster_range (int or tuple): Defines the range of cluster numbers to be evaluated. 
+            If it is an int then by default range is (2, n_cluster_range). If tuple then it is (min_n_clusters, max_n_clusters).
+        - ensemble_size (int): The number of GMMs in the ensemble.
+        - sample_size (int): The number of samples to use for fitting the GMMs if too large.
+            Default is 500,000.
+        - seeds (list): List of random seeds for reproducibility.
+    
+    Returns:
+        - fig (matplotlib.figure.Figure): The matplotlib figure object containing the BIC plot for the range of cluster numbers.
+    """
+
+    # Define the range of cluster numbers to evaluate
+    if isinstance(n_cluster_range, int):
+        n_components_range = range(2, n_cluster_range + 1)
+    elif isinstance(n_cluster_range, tuple) and len(n_cluster_range) == 2:
+        n_components_range = range(n_cluster_range[0], n_cluster_range[1] + 1)
+    else:
+        raise ValueError("n_cluster_range must be an int or a tuple of two ints.")
+    
+    # Check if the DataFrame is too large and sample it if necessary
+    if len(df) > 1_000_000:
+        X = df.sample(n=sample_size, random_state=22)
+    else:
+        X = df
+    
+    tmp = tempfile.mktemp(suffix='.npy')
+    np.save(tmp, X)
+    X_memmap = np.load(tmp, mmap_mode='r')
+    del X 
+
+    cores_used = cpu_count()
+    total_fits = len(seeds) * len(n_components_range)
+    print(f"Fitting {total_fits} GMMs ({len(seeds)} seeds \u00d7 {len(n_components_range)} components)")
+    print(f"CPU cores available: {cores_used}")
+    print(f"Full data shape: {X_memmap.shape} | Subsample per seed: {sample_size:,} rows")
+
+    try:
+        results = Parallel(n_jobs=-1, backend="loky")(
+            delayed(fit_gmm_seed)(seed, n_components_range, sample_size, X_memmap)
+            for seed in tqdm(seeds, desc="Fitting GMMs", unit="seed")
+        )
+    finally:
+        os.remove(tmp)  # always clean up temp file
+
+    # Reconstruct the same dict structure as before: {seed_index: [score per n_components]}
+    bic_scores = {i: bics for i, (bics, aics) in enumerate(results)}
+    aic_scores = {i: aics for i, (bics, aics) in enumerate(results)}
+
+    print(f"\nDone. {total_fits} fits completed.")
+    return bic_scores, aic_scores
+
+def calculate_thickness(df, bath_path, bath_cols=['lon', 'lat', 'z'], stride=1, 
+                        proj='espg:4326',res_m=150_000,depth_target_m = 800, 
+                        prob_cols=[f'prob_cluster_{i}' for i in range(6)],
+                        feature_cols=['Longitude_[deg_E]','Latitude_[deg_N]','Depth_[m]','year']):
+    """ Function that calculates water mass thickness, weighted by probabilities. 
+    This function is inspired by the method used by Kate Oglethorpe to calculate 
+    thickness of water masses integrated by water mass fractions.
+     
+    Args:
+        - df (pd.DataFrame): The input DataFrame containing the data to be clustered. It must contain
+            x_bin, y_bin, year_bin, z_bin (depth in m), prob_cluster_0..5, plus any other columns you want interpolated.
+        - bath_path (str): Path to the bathymetry .dat file.
+        - bath_cols (list of str): List of column names in the bathymetry file. Default is ['lon', 'lat', 'z'].
+        - stride (int): Stride for reading the bathymetry file. Default is 1.
+        - proj (str): Projection of the bathymetry data. Default is 'espg:4326'.
+        - res_m (int): Resolution in meters for binning. Default is 150,000 (150 km).
+        - depth_target_m (int): Target depth in meters for calculating thickness. Default is 800 m.
+        - prob_cols (list of str): List of probability column names in the DataFrame. 
+            Default is ['prob_cluster_0', 'prob_cluster_1', 'prob_cluster_2', 'prob_cluster_3', 'prob_cluster_4', 'prob_cluster_5'].
+        - feature_cols (list of str): List of feature column names in the DataFrame. 
+            Default is ['Longitude_[deg_E]','Latitude_[deg_N]','Depth_[m]','year'].
+    Returns:
+        - thickness_df (pd.DataFrame): DataFrame containing the calculated thickness of water masses, weighted by probabilities."""
+    
+    # Read and preprocess bathymetry data
+    bathy_flat = pd.read_csv(
+        bath_path, sep=r'\s+', header=None, names=bath_cols,
+        usecols=range(len(bath_cols)), comment='#', skiprows=0,
+    )
+
+    # Drop non-numeric rows and downsample
+    bathy_flat = bathy_flat.apply(pd.to_numeric, errors='coerce')   # header text -> NaN
+    n_before = len(bathy_flat)
+    bathy_flat = bathy_flat.dropna().iloc[::stride].reset_index(drop=True)
+    print(f"Dropped {n_before - len(bathy_flat):,} non-numeric rows; kept {len(bathy_flat):,}")
+    print(bathy_flat.describe().loc[['min', 'max']])   # sanity check: lon/lat/depth ranges
+
+    # Assumes lon/lat in degrees (EPSG:4326). If your file has projected
+    # x/y instead, set the source CRS in Transformer.from_crs accordingly.
+    if proj=='espg:4326':
+        to_3413 = Transformer.from_crs(proj, "epsg:3413", always_xy=True)
+        bathy_flat['x'], bathy_flat['y'] = to_3413.transform(bathy_flat[bath_cols[0]].values,
+                                                        bathy_flat[bath_cols[1]].values)
+    elif proj=='epsg:3413':
+        bathy_flat['x'], bathy_flat['y'] = bathy_flat[bath_cols[0]], bathy_flat[bath_cols[1]]
+    else:
+        raise ValueError(f"Unknown projection: {proj}")
+    
+    bathy_flat['x_bin'] = (bathy_flat['x'] // res_m) * res_m + res_m / 2
+    bathy_flat['y_bin'] = (bathy_flat['y'] // res_m) * res_m + res_m / 2
+
+    # Sign convention: the code below assumes ocean depths are negative
+    # in the file (as in IBCAO). If yours are positive, remove the .abs() sign
+    # expectation by checking bathy_flat['z'].describe().
+    conservative_bathy = (
+        bathy_flat.groupby(['x_bin', 'y_bin'])['z'].mean().abs()
+        .reset_index().rename(columns={'z': 'bathymetry_m'})
+    )
+    conservative_bathy['target_depth'] = conservative_bathy['bathymetry_m'].clip(upper=depth_target_m)
+
+    # Transform the input DataFrame coordinates to EPSG:3413 and bin them
+    df['x'], df['y'] = to_3413.transform(df[feature_cols[0]].values, df[feature_cols[1]].values)
+    df['x_bin'] = (df['x'] // res_m) * res_m + res_m / 2
+    df['y_bin'] = (df['y'] // res_m) * res_m + res_m / 2
+    df.rename(columns={feature_cols[2]: 'z_bin', feature_cols[3]: 'year_bin'}, inplace=True)
+    prob_with_bathy = df.merge(conservative_bathy, on=['x_bin', 'y_bin'], how='left')
+
+
+    # ── Completeness criterion ────────────────────
+    # Define constants for completeness checks
+    surface_tol   = 15
+    shallow_tol   = 15
+    deep_tol = 25
+
+    # Check if each (x_bin, y_bin, year_bin) profile reaches the surface and the bottom
+    profile_depth_check = (
+        prob_with_bathy
+        .groupby(['x_bin', 'y_bin', 'year_bin'])
+        .agg(min_z_bin=('z_bin', 'min'),
+            max_z_bin=('z_bin', 'max'),
+            bathymetry_m=('bathymetry_m', 'first'))
+        .reset_index()
+    )
+
+    # Determine if the profile is complete based on depth criteria
+    is_deep_cell    = profile_depth_check['bathymetry_m'] >= depth_target_m
+    is_shallow_cell = profile_depth_check['bathymetry_m'] < depth_target_m
+    reaches_deep    = profile_depth_check['max_z_bin'] >= (depth_target_m - deep_tol)
+    reaches_shallow = profile_depth_check['max_z_bin'] >= (profile_depth_check['bathymetry_m'] - shallow_tol)
+
+    # Combine the conditions to determine if the profile is complete
+    bottom_complete  = np.select([is_deep_cell, is_shallow_cell], [reaches_deep, reaches_shallow])
+    surface_complete = profile_depth_check['min_z_bin'] <= surface_tol
+    profile_depth_check['is_complete'] = bottom_complete & surface_complete
+
+    # Report the number of complete profiles
+    n_total, n_kept = len(profile_depth_check), profile_depth_check['is_complete'].sum()
+    print(f"Keeping {n_kept:,} / {n_total:,} (cell, year) profiles ({n_kept/n_total:.1%})")
+
+    # Save the complete profiles for merging with the probability DataFrame
+    complete_profiles = profile_depth_check.loc[
+        profile_depth_check['is_complete'], ['x_bin', 'y_bin', 'year_bin']
+    ]
+    df_filtered = prob_with_bathy.merge(complete_profiles, on=['x_bin', 'y_bin', 'year_bin'], how='inner')
+
+    # ── Interpolation onto the standard depth grid ──────────────────────────────
+    # Hardcoded standard depths for interpolation (5 m to 800 m)
+    STANDARD_DEPTHS_800 = np.array([
+        5, 10, 15, 20, 25, 30, 35, 40, 45,
+        50, 55, 60, 65, 70, 75, 80, 85, 90, 95,
+        100, 125, 150, 175, 200, 225, 250, 275, 300,
+        325, 350, 375, 400, 425, 450, 475, 500,
+        550, 600, 650, 700, 750, 800
+    ])
+
+    def interpolate_profile_to_standard_depths(group, value_cols, standard_depths=STANDARD_DEPTHS_800):
+        """Fill gaps inside one profile's observed range; never extrapolate."""
+        group = group.sort_values('z_bin')
+        z_orig = group['z_bin'].values
+        if len(z_orig) < 2:
+            return group[['z_bin'] + value_cols]
+
+        profile_min, profile_max = z_orig.min(), z_orig.max()
+        target_depths = standard_depths[
+            (standard_depths >= profile_min) &
+            (standard_depths <= min(profile_max, standard_depths.max()))
+        ]
+        result = pd.DataFrame({'z_bin': target_depths})
+        for col in value_cols:
+            result[col] = np.interp(target_depths, z_orig, group[col].values)
+        return result
+
+    # Interpolate each profile to the standard depth grid
+    group_cols = ['x_bin', 'y_bin', 'year_bin']
+    interp_frames = []
+    for keys, group in df_filtered.groupby(group_cols):
+        interp_df = interpolate_profile_to_standard_depths(group, prob_cols)
+        for col, val in zip(group_cols, keys):
+            interp_df[col] = val
+        interp_df['bathymetry_m'] = group['bathymetry_m'].iloc[0]
+        interp_df['target_depth'] = group['target_depth'].iloc[0]
+        interp_frames.append(interp_df)
+
+    # Combine all interpolated profiles into a single DataFrame
+    df_filtered_interp = pd.concat(interp_frames, ignore_index=True)
+
+    # Truncate to target depth (800 m for deep cells, local seafloor for shallow ones)
+    df_filtered_interp = df_filtered_interp[
+        df_filtered_interp['z_bin'] <= df_filtered_interp['target_depth']
+    ].reset_index(drop=True)
+
+    # ── Probability-weighted thickness ──────────────────────────────────────────
+    def layer_edges(depths, max_depth=None):
+        """Top/bottom edge of each standard-depth layer (midpoint method)."""
+        mids = (depths[:-1] + depths[1:]) / 2
+        top = np.concatenate([[max(0.0, depths[0] - (depths[1] - depths[0]) / 2)], mids])
+        bot = np.concatenate([mids, [depths[-1] + (depths[-1] - depths[-2]) / 2]])
+        if max_depth is not None:
+            bot[-1] = max(depths[-1], min(bot[-1], max_depth))
+        return top, bot
+
+
+    def thickness_from_probability(group, prob_cols=prob_cols):
+        """Probability-weighted thickness (m) for each cluster in one profile."""
+        g = group.sort_values('z_bin')
+        depths = g['z_bin'].values
+        if len(depths) < 2:
+            return pd.Series({f'thickness_{c}': np.nan for c in prob_cols})
+        top, bot = layer_edges(depths, max_depth=g['target_depth'].iloc[0])
+        dz = bot - top
+        return pd.Series({f'thickness_{c}': np.nansum(g[c].values * dz) for c in prob_cols})
+
+
+    thickness_df = (df_filtered_interp.groupby(group_cols)
+                    .apply(thickness_from_probability, include_groups=False).reset_index())
+
+    return thickness_df
